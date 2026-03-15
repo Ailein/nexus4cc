@@ -8,7 +8,7 @@ import { createServer } from 'http';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
 
 // 加载 .env 文件（如果存在）
 try {
@@ -26,6 +26,13 @@ try {
 } catch { /* .env 不存在时忽略 */ }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// 持久化数据目录（通过 Docker volume 挂载，重建容器不丢失）
+const DATA_DIR = join(__dirname, 'data');
+const TOOLBAR_CONFIG_FILE = join(DATA_DIR, 'toolbar-config.json');
+const CONFIGS_DIR = join(DATA_DIR, 'configs');
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
 
 const app = express();
 app.use(express.json());
@@ -75,17 +82,101 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // POST /api/sessions — 在 tmux 中创建新 window
+// body: { rel_path, profile?, command? }
+//   profile 优先：用 nexus-run-claude.sh 启动 claude（配置隔离 + 自动续接）
+//   否则使用 command（默认 sh）
 app.post('/api/sessions', authMiddleware, (req, res) => {
-  const { rel_path, command = 'bash' } = req.body || {};
+  const { rel_path, profile, command = 'sh' } = req.body || {};
   if (!rel_path) return res.status(400).json({ error: 'rel_path required' });
-  const name = rel_path.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'default';
-  const cwd = `${WORKSPACE_ROOT}/${rel_path}`;
-  const cmd = `tmux new-window -t ${TMUX_SESSION} -c "${cwd}" -n "${name}" "${command}"`;
+  const cwd = rel_path.startsWith('/') ? rel_path : `${WORKSPACE_ROOT}/${rel_path}`;
+  const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'session';
+  const shellCmd = profile
+    ? `bash /app/nexus-run-claude.sh ${profile} ${cwd}`
+    : command;
+  const cmd = `tmux new-window -t ${TMUX_SESSION} -c "${cwd}" -n "${name}" "${shellCmd}"`;
   exec(cmd, (err) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ name, cwd, command });
+    res.json({ name, cwd, command: shellCmd, profile: profile || null });
   });
 });
+
+// GET /api/configs — 列出所有 claude 配置 profile
+app.get('/api/configs', authMiddleware, (req, res) => {
+  try {
+    const files = readdirSync(CONFIGS_DIR).filter(f => f.endsWith('.json'));
+    const configs = files.map(f => {
+      const id = f.replace('.json', '');
+      try {
+        const data = JSON.parse(readFileSync(join(CONFIGS_DIR, f), 'utf8'));
+        return { id, label: data.label || id, ...data };
+      } catch {
+        return { id, label: id };
+      }
+    });
+    res.json(configs);
+  } catch {
+    res.json([]);
+  }
+});
+
+// POST /api/configs/:id — 创建或更新配置 profile
+app.post('/api/configs/:id', authMiddleware, (req, res) => {
+  const id = req.params.id.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+  if (!id) return res.status(400).json({ error: 'invalid id' });
+  try {
+    writeFileSync(join(CONFIGS_DIR, `${id}.json`), JSON.stringify(req.body, null, 2), 'utf8');
+    res.json({ ok: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/configs/:id — 删除配置 profile
+app.delete('/api/configs/:id', authMiddleware, (req, res) => {
+  const file = join(CONFIGS_DIR, `${req.params.id}.json`);
+  try {
+    if (existsSync(file)) unlinkSync(file);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/toolbar-config — 读取工具栏配置
+app.get('/api/toolbar-config', authMiddleware, (req, res) => {
+  try {
+    if (!existsSync(TOOLBAR_CONFIG_FILE)) return res.json(null);
+    const data = readFileSync(TOOLBAR_CONFIG_FILE, 'utf8');
+    res.json(JSON.parse(data));
+  } catch {
+    res.json(null);
+  }
+});
+
+// POST /api/toolbar-config — 保存工具栏配置
+app.post('/api/toolbar-config', authMiddleware, (req, res) => {
+  try {
+    writeFileSync(TOOLBAR_CONFIG_FILE, JSON.stringify(req.body), 'utf8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/sessions — 列出 tmux 会话的所有窗口
+app.get('/api/sessions', authMiddleware, (req, res) => {
+  exec(
+    `tmux list-windows -t ${TMUX_SESSION} -F "#{window_index}|#{window_name}|#{window_active}"`,
+    (err, stdout) => {
+      if (err) return res.status(500).json({ error: err.message })
+      const windows = stdout.trim().split('\n').filter(Boolean).map(line => {
+        const [index, name, active] = line.split('|')
+        return { index: Number(index), name, active: active?.trim() === '1' }
+      })
+      res.json({ session: TMUX_SESSION, windows })
+    }
+  )
+})
 
 // SPA fallback — 所有非 API 路由返回 index.html
 app.get('*', (req, res) => {

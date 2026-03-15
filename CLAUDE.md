@@ -124,6 +124,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 ## Docker Access Constraints
 
 Claude Code runs inside a Docker container with access to the host Docker socket, meaning it can affect **all containers on the host**. This is a high-privilege capability and must be strictly scoped.
+Access host service by using e.g. host.docker.internal:59000
 
 ### Allowed
 

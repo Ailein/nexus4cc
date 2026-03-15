@@ -1,8 +1,9 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import Toolbar from './Toolbar'
+import SessionManager from './SessionManager'
 
 interface Props {
   token: string
@@ -10,9 +11,7 @@ interface Props {
 }
 
 const FONT_SIZE_KEY = 'nexus_font_size'
-const PX_PER_LINE = 20
 const TAP_THRESHOLD = 8
-const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)
 
 export default function Terminal({ token, onLogout }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -20,6 +19,7 @@ export default function Terminal({ token, onLogout }: Props) {
   const wsRef = useRef<WebSocket | null>(null)
   const userScrolledRef = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const [showSessions, setShowSessions] = useState(false)
 
   const sendToWs = useCallback((data: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -85,12 +85,26 @@ export default function Terminal({ token, onLogout }: Props) {
       return true
     })
 
+    // 动态获取实际行高，避免固定常量导致不同设备滑动灵敏度不一致
+    function getLineHeight(): number {
+      const core = (term as any)._core
+      const cellH = core?._renderService?.dimensions?.css?.cell?.height
+      if (cellH && cellH > 0) return cellH
+      const h = container.offsetHeight
+      if (h > 0 && term.rows > 0) return h / term.rows
+      return 20
+    }
+
     // WebSocket 连接
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`)
     wsRef.current = ws
 
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+    ws.onopen = () => {
+      // 每次建立连接时重新 fit，确保以当前设备的实际尺寸初始化 PTY
+      fitAddon.fit()
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+    }
 
     ws.onmessage = (e) => {
       term.write(e.data)
@@ -111,32 +125,69 @@ export default function Terminal({ token, onLogout }: Props) {
     // 桌面端键盘输入（xterm 直接处理）
     term.onData((data) => ws.send(data))
 
-    // 移动端 touch 处理：直接绑在容器上，无需 CSS media query
+    // 移动端 touch 处理
     let touchStartY = 0
     let touchLastY = 0
+    let isPinching = false
+    let pinchStartDist = 0
+    let pinchStartFontSize = fontSize
+
+    function getTouchDist(e: TouchEvent): number {
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      return Math.sqrt(dx * dx + dy * dy)
+    }
 
     function onTouchStart(e: TouchEvent) {
-      touchStartY = e.touches[0].clientY
-      touchLastY = e.touches[0].clientY
+      if (e.touches.length === 2) {
+        isPinching = true
+        pinchStartDist = getTouchDist(e)
+        pinchStartFontSize = parseInt(localStorage.getItem(FONT_SIZE_KEY) || '16', 10)
+      } else {
+        isPinching = false
+        touchStartY = e.touches[0].clientY
+        touchLastY = e.touches[0].clientY
+      }
     }
 
     function onTouchMove(e: TouchEvent) {
       e.preventDefault()
-      const y = e.touches[0].clientY
-      const lines = Math.round((touchLastY - y) / PX_PER_LINE)
-      touchLastY = y
-      if (lines !== 0) {
-        term.scrollLines(lines)
-        const buffer = (term as any).buffer?.active
-        if (buffer) {
-          const atBottom = buffer.viewportY >= buffer.baseY
-          userScrolledRef.current = !atBottom
-          window.dispatchEvent(new CustomEvent('nexus:atbottom', { detail: atBottom }))
+      if (isPinching && e.touches.length === 2) {
+        // 双指缩放：调整字体大小
+        const dist = getTouchDist(e)
+        const scale = dist / pinchStartDist
+        const newSize = Math.round(Math.max(8, Math.min(32, pinchStartFontSize * scale)))
+        if (newSize !== term.options.fontSize) {
+          term.options.fontSize = newSize
+          localStorage.setItem(FONT_SIZE_KEY, String(newSize))
+          fitAddon.fit()
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+          }
+        }
+      } else if (!isPinching) {
+        // 单指滑动：滚动终端
+        const y = e.touches[0].clientY
+        const lineHeight = getLineHeight()
+        const lines = Math.round((touchLastY - y) / lineHeight)
+        touchLastY = y
+        if (lines !== 0) {
+          term.scrollLines(lines)
+          const buffer = (term as any).buffer?.active
+          if (buffer) {
+            const atBottom = buffer.viewportY >= buffer.baseY
+            userScrolledRef.current = !atBottom
+            window.dispatchEvent(new CustomEvent('nexus:atbottom', { detail: atBottom }))
+          }
         }
       }
     }
 
     function onTouchEnd(e: TouchEvent) {
+      if (isPinching) {
+        isPinching = false
+        return
+      }
       const endY = e.changedTouches[0].clientY
       if (Math.abs(endY - touchStartY) < TAP_THRESHOLD) {
         // tap：弹出输入法
@@ -148,17 +199,26 @@ export default function Terminal({ token, onLogout }: Props) {
     container.addEventListener('touchmove', onTouchMove, { passive: false })
     container.addEventListener('touchend', onTouchEnd, { passive: true })
 
-    // resize
-    const resizeObserver = new ResizeObserver(() => {
+    // resize：窗口/容器尺寸变化时重新 fit 并通知服务端
+    function sendResize() {
       fitAddon.fit()
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
       }
-    })
+    }
+
+    // 屏幕旋转时等待布局稳定后再 fit
+    function onOrientationChange() {
+      setTimeout(sendResize, 300)
+    }
+
+    const resizeObserver = new ResizeObserver(sendResize)
     resizeObserver.observe(container)
+    window.addEventListener('orientationchange', onOrientationChange)
 
     return () => {
       resizeObserver.disconnect()
+      window.removeEventListener('orientationchange', onOrientationChange)
       container.removeEventListener('touchstart', onTouchStart)
       container.removeEventListener('touchmove', onTouchMove)
       container.removeEventListener('touchend', onTouchEnd)
@@ -194,11 +254,18 @@ export default function Terminal({ token, onLogout }: Props) {
         aria-hidden="true"
       />
       <div ref={containerRef} style={styles.terminal} />
-      {isMobile && (
-        <Toolbar
+      <Toolbar
+        token={token}
+        sendToWs={sendToWs}
+        scrollToBottom={scrollToBottom}
+        termRef={termRef}
+        onOpenSessions={() => setShowSessions(true)}
+      />
+      {showSessions && (
+        <SessionManager
+          token={token}
           sendToWs={sendToWs}
-          scrollToBottom={scrollToBottom}
-          termRef={termRef}
+          onClose={() => setShowSessions(false)}
           onLogout={onLogout}
         />
       )}

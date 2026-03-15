@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/bin/bash
 SESSION="${TMUX_SESSION:-main}"
 
-# 如果 session 不存在则创建
+# 确保 tmux session 存在（已存在时静默跳过）
 tmux new-session -d -s "$SESSION" 2>/dev/null || true
 
-exec node server.js
+exec node /app/server.js

@@ -1,26 +1,25 @@
 version: "3.9"
 services:
   nexus:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cc:nexus
     container_name: nexus
     restart: unless-stopped
     environment:
       JWT_SECRET: ${JWT_SECRET}
       ACC_PASSWORD_HASH: ${ACC_PASSWORD_HASH}
       TMUX_SESSION: ${TMUX_SESSION:-main}
-      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace}
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/home/librae}
       PORT: 3000
     ports:
       - "59000:3000"
     volumes:
-      - ${WORKSPACE_ROOT:-/home/librae}:/workspace:ro
+      # 宿主机工作区整体挂载，路径与宿主机保持一致，claude 需要写权限
+      - /home/librae:/home/librae
+      # toolbar 配置等持久化数据，重建容器不丢失
+      - nexus-data:/app/data
 
-  nginx:
-    image: nginx:stable-alpine
-    container_name: nexus-nginx
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - nexus
+volumes:
+  nexus-data:
