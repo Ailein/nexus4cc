@@ -82,6 +82,7 @@ cd "$PROJECT"
 
 echo ""
 echo "[Nexus] Proxy check: $(curl -s --max-time 5 ipinfo.io/ip 2>/dev/null || echo 'unreachable') ($(curl -s --max-time 5 ipinfo.io/country 2>/dev/null || echo '?'))"
+echo "[Nexus] Auth  : API_KEY=${ANTHROPIC_API_KEY:+set} AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:+set} BASE_URL=${ANTHROPIC_BASE_URL}"
 echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║  Nexus · Claude Session"

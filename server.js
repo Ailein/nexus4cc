@@ -969,4 +969,9 @@ server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Nexus listening on :${PORT}`);
   console.log(`tmux session: ${TMUX_SESSION}`);
   console.log(`workspace: ${WORKSPACE_ROOT}`);
+  // 确保默认 tmux session 存在，防止重启后 main session 丢失
+  try {
+    execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n shell "zsh"`);
+    console.log(`tmux session '${TMUX_SESSION}' ready`);
+  } catch (e) { console.warn('tmux session init failed:', e.message); }
 });
