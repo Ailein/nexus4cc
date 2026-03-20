@@ -48,8 +48,8 @@ export const ALL_KEYS: KeyDef[] = [
 
 export const FACTORY_PINNED = ['esc', 'tab', 'ctrl-c', 'up', 'down', 'left', 'right', 'enter', 'ctrl-l', 'ctrl-r']
 export const FACTORY_EXPANDED = [
-  'ctrl-d', 'ctrl-u', 'ctrl-k', 'ctrl-y', 'ctrl-b', 'ctrl-o', 'ctrl-t',
-  'ctrl-f', 'ctrl-g', 'ctrl-j', 'shift-tab',
+  'ctrl-d', 'ctrl-u', 'ctrl-k', 'ctrl-y', 'ctrl-a', 'ctrl-e', 'ctrl-z',
+  'ctrl-b', 'ctrl-o', 'ctrl-t', 'ctrl-f', 'ctrl-g', 'ctrl-j', 'shift-tab',
   'alt-b', 'alt-f', 'slash', 'bang', 'at', 'ctrl-v', 'scroll-btm', 'copy-term',
 ]
 
