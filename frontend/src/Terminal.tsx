@@ -450,6 +450,8 @@ export default function Terminal({ token }: Props) {
   const pausePollingRef = useRef(false)
   const activeWindowIndexRef = useRef(0)
   const windowsInitializedRef = useRef(false)
+  const windowsLoadedRef = useRef(false)
+  const [windowsLoaded, setWindowsLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const uploadFileRef = useRef<(file: File) => Promise<void>>(null!)
   const [, setWindowOutputs] = useState<Record<number, { output: string; clients: number; idleMs: number }>>({})
@@ -572,6 +574,10 @@ export default function Terminal({ token }: Props) {
       const d = await r.json()
       const wins = d.windows ?? []
       setWindows(wins)
+      if (!windowsLoadedRef.current) {
+        windowsLoadedRef.current = true
+        setWindowsLoaded(true)
+      }
       // 首次加载：同步到 tmux 当前活跃窗口
       // 后续轮询：只有当前窗口消失时才 fallback，避免反复重连 WebSocket
       const currentStillExists = wins.some((w: TmuxWindow) => w.index === activeWindowIndexRef.current)
@@ -683,6 +689,8 @@ export default function Terminal({ token }: Props) {
     setWindows([])
     setActiveWindowIndex(0)
     windowsInitializedRef.current = false
+    windowsLoadedRef.current = false
+    setWindowsLoaded(false)
     // 重新获取窗口列表
     setTimeout(() => fetchWindows(), 100)
   }
@@ -1199,8 +1207,8 @@ export default function Terminal({ token }: Props) {
         </div>
       )}
 
-      {/* 空状态提示 */}
-      {windows.length === 0 && !isConnecting && (
+      {/* 空状态提示：只在数据加载完成后才显示 */}
+      {windows.length === 0 && windowsLoaded && !isConnecting && (
         <div style={{
           position: 'absolute',
           top: '50%',
