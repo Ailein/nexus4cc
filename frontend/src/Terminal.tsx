@@ -607,7 +607,7 @@ export default function Terminal({ token }: Props) {
       const outputs: Record<number, any> = {}
       for (const win of windows) {
         try {
-          const r = await fetch(`/api/sessions/${win.index}/output`, { headers: { Authorization: `Bearer ${token}` } })
+          const r = await fetch(`/api/sessions/${win.index}/output?session=${encodeURIComponent(activeTmuxSession)}`, { headers: { Authorization: `Bearer ${token}` } })
           if (r.ok) outputs[win.index] = await r.json()
         } catch {}
       }
@@ -615,7 +615,7 @@ export default function Terminal({ token }: Props) {
     }
     const interval = setInterval(fetchOutputs, 3000)
     return () => clearInterval(interval)
-  }, [windows.length, token])
+  }, [windows.length, token, activeTmuxSession])
 
   // 轮询运行中任务数量（用于徽标显示）
   useEffect(() => {

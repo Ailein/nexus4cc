@@ -356,8 +356,12 @@ function loadTasks() {
   return []
 }
 
+const MAX_TASKS = 200
+
 function saveTasks(tasks) {
-  writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2))
+  // 保留最新的 MAX_TASKS 条，防止文件无限增长
+  const trimmed = tasks.length > MAX_TASKS ? tasks.slice(-MAX_TASKS) : tasks
+  writeFileSync(TASKS_FILE, JSON.stringify(trimmed, null, 2))
 }
 
 function updateTask(id, updates) {
