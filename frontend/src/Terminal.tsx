@@ -516,6 +516,13 @@ export default function Terminal({ token }: Props) {
     return () => window.removeEventListener('resize', check)
   }, [])
 
+  // 请求通知权限（首次使用时，静默请求）
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
+  }, [])
+
   // CSS vars 独立于 xterm，组件 mount 即执行
   const applyCssVars = useCallback((mode: ThemeMode) => {
     const isDark = mode === 'dark'
