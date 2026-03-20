@@ -17,10 +17,11 @@ interface Props {
   token: string
   windows: { index: number; name: string; active: boolean }[]
   activeWindowName: string
+  tmuxSession: string
   onClose: () => void
 }
 
-export default function TaskPanel({ token, windows, activeWindowName, onClose }: Props) {
+export default function TaskPanel({ token, windows, activeWindowName, tmuxSession, onClose }: Props) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [prompt, setPrompt] = useState('')
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
@@ -62,7 +63,7 @@ export default function TaskPanel({ token, windows, activeWindowName, onClose }:
       const r = await fetch('/api/tasks', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_name: sessionName, prompt: prompt.trim() }),
+        body: JSON.stringify({ session_name: sessionName, prompt: prompt.trim(), tmux_session: tmuxSession }),
         signal: controller.signal,
       })
       if (!r.ok || !r.body) {

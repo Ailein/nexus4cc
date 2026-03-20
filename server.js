@@ -368,13 +368,14 @@ app.get('/api/tasks', authMiddleware, (req, res) => {
 
 // POST /api/tasks — 创建新任务，SSE 流式返回
 app.post('/api/tasks', authMiddleware, (req, res) => {
-  const { session_name, prompt, profile } = req.body || {}
+  const { session_name, prompt, profile, tmux_session } = req.body || {}
   if (!prompt) return res.status(400).json({ error: 'prompt required' })
 
   // 找到 session 对应的 cwd
   let cwd = WORKSPACE_ROOT
+  const targetSession = tmux_session || TMUX_SESSION
   try {
-    const windows = execSync(`tmux list-windows -t ${TMUX_SESSION} -F "#I:#W:#{pane_current_path}"`).toString().trim().split('\n')
+    const windows = execSync(`tmux list-windows -t ${targetSession} -F "#I:#W:#{pane_current_path}"`).toString().trim().split('\n')
     for (const line of windows) {
       const parts = line.split(':')
       const name = parts[1]

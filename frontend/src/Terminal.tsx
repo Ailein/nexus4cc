@@ -993,7 +993,10 @@ export default function Terminal({ token }: Props) {
   // Effect B: WebSocket connection (reconnects on window switch, xterm persists)
   useEffect(() => {
     setIsScrolledUp(false)
-    userScrolledRef.current = false
+    // If this window had a saved scroll position, don't auto-scroll on incoming messages
+    // until the restore timeout in attachToWindow fires and onScroll updates the ref.
+    const hasSavedScroll = (scrollPositionsRef.current[activeWindowIndex] ?? 0) > 0
+    userScrolledRef.current = hasSavedScroll
     hasConnectedRef.current = false
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1231,6 +1234,7 @@ export default function Terminal({ token }: Props) {
             token={token}
             windows={windows}
             activeWindowName={windows.find(w => w.index === activeWindowIndex)?.name || ''}
+            tmuxSession={activeTmuxSession}
             onClose={() => setShowTasks(false)}
           />
         </Suspense>
