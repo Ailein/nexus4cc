@@ -10,6 +10,7 @@ interface Task {
   createdAt: string
   completedAt?: string
   exitCode?: number
+  source?: string
 }
 
 interface Props {
@@ -30,6 +31,8 @@ export default function TaskPanel({ token, windows, activeWindowName, onClose }:
 
   useEffect(() => {
     fetchTasks()
+    const interval = setInterval(fetchTasks, 5000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
@@ -179,6 +182,7 @@ export default function TaskPanel({ token, windows, activeWindowName, onClose }:
                   >
                     <span style={{ ...s.statusDot, background: task.status === 'success' ? '#22c55e' : '#ef4444' }} />
                     <span style={s.taskPrompt}>{task.prompt.slice(0, 60)}{task.prompt.length > 60 ? '...' : ''}</span>
+                    {task.source === 'telegram' && <span style={s.sourceBadge}>TG</span>}
                     <span style={s.taskSession}>{task.session_name}</span>
                   </div>
                 ))}
@@ -397,5 +401,15 @@ const s: Record<string, React.CSSProperties> = {
     color: 'var(--nexus-muted)',
     fontSize: 11,
     flexShrink: 0,
+  },
+  sourceBadge: {
+    background: '#2563eb',
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: 700,
+    padding: '1px 4px',
+    borderRadius: 3,
+    flexShrink: 0,
+    letterSpacing: 0.5,
   },
 }
