@@ -740,7 +740,7 @@ function ensureWindowPty(session, windowIndex) {
     env: { ...process.env, LANG: 'C.UTF-8', TERM: 'xterm-256color' },
   });
 
-  const entry = { pty: ptyProc, clients: new Set(), lastOutput: '', lastActivity: Date.now() };
+  const entry = { pty: ptyProc, clients: new Set(), clientSizes: new Map(), lastOutput: '', lastActivity: Date.now() };
   ptyMap.set(actualKey, entry);
 
   ptyProc.onData((data) => {
@@ -802,7 +802,14 @@ wss.on('connection', (ws, req) => {
     try {
       const data = JSON.parse(str);
       if (data.type === 'resize' && data.cols && data.rows) {
-        ent.pty.resize(Number(data.cols), Number(data.rows));
+        ent.clientSizes.set(ws, { cols: Number(data.cols), rows: Number(data.rows) });
+        // Use minimum size across all connected clients to avoid clipping
+        let minCols = Number(data.cols), minRows = Number(data.rows);
+        for (const [, size] of ent.clientSizes) {
+          if (size.cols < minCols) minCols = size.cols;
+          if (size.rows < minRows) minRows = size.rows;
+        }
+        ent.pty.resize(Math.max(minCols, 10), Math.max(minRows, 5));
       }
     } catch {
       // 非 JSON 消息视为原始键盘输入
@@ -814,7 +821,17 @@ wss.on('connection', (ws, req) => {
     const ent = ptyMap.get(key);
     if (ent) {
       ent.clients.delete(ws);
+      ent.clientSizes.delete(ws);
       console.log(`Client disconnected from ${key} (clients: ${ent.clients.size})`);
+      // Recompute minimum size if other clients remain
+      if (ent.clients.size > 0 && ent.clientSizes.size > 0) {
+        let minCols = Infinity, minRows = Infinity;
+        for (const [, size] of ent.clientSizes) {
+          if (size.cols < minCols) minCols = size.cols;
+          if (size.rows < minRows) minRows = size.rows;
+        }
+        if (minCols !== Infinity) ent.pty.resize(Math.max(minCols, 10), Math.max(minRows, 5));
+      }
       // 如果 5 分钟后没有客户端，清理 PTY 节省资源
       setTimeout(() => {
         const e = ptyMap.get(key);
@@ -830,7 +847,7 @@ wss.on('connection', (ws, req) => {
   ws.on('error', (err) => {
     console.error('WebSocket error:', err.message);
     const ent = ptyMap.get(key);
-    if (ent) ent.clients.delete(ws);
+    if (ent) { ent.clients.delete(ws); ent.clientSizes.delete(ws); }
   });
 });
 
