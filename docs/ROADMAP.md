@@ -162,3 +162,8 @@
 | TaskPanel 5s 轮询 + Telegram TG 来源标识 | `0854359` |
 | 工具栏新增 ^Z / ^A / ^E 快捷键 | `19e7cb1` |
 | 修复：tasks cwd 路径含冒号解析错误 | `e346c8b` |
+| 修复：/api/tasks 支持多 tmux session（tmux_session 参数）| `aab1aaf` |
+| 修复：窗口切换时滚动位置恢复（userScrolledRef 保持）| `aab1aaf` |
+| Telegram 增量进度更新（editMessageText 每 5 秒）| `053fad6` |
+| 移动端水平滑动切换 tmux 窗口 | `5f33934` |
+| Telegram /switch 命令切换目标窗口 | `6387cdc` |

@@ -575,7 +575,12 @@ app.post('/api/webhooks/telegram', (req, res) => {
 
   // /switch <index|name> — 切换 active tmux 窗口
   if (message.text?.trim().startsWith('/switch ')) {
-    const target = message.text.trim().slice('/switch '.length).trim()
+    const raw = message.text.trim().slice('/switch '.length).trim()
+    const target = raw.replace(/[^a-zA-Z0-9_\-]/g, '') // 只允许安全字符
+    if (!target) {
+      telegramSend(chatId, '❌ 无效的窗口名称，只允许字母/数字/下划线/连字符')
+      return
+    }
     exec(`tmux select-window -t ${TMUX_SESSION}:${target}`, (err) => {
       if (err) {
         telegramSend(chatId, `❌ 无法切换到窗口 \`${target}\`: ${err.message}`)
