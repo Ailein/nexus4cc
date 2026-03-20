@@ -81,6 +81,8 @@ unset _proxy
 cd "$PROJECT"
 
 echo ""
+echo "[Nexus] Proxy check: $(curl -s --max-time 5 ipinfo.io/ip 2>/dev/null || echo 'unreachable') ($(curl -s --max-time 5 ipinfo.io/country 2>/dev/null || echo '?'))"
+echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║  Nexus · Claude Session"
 echo "║  Profile : ${LABEL:-$PROFILE}"
