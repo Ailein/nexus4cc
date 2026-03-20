@@ -22,6 +22,7 @@ interface Props {
 
 const FONT_SIZE_KEY = 'nexus_font_size'
 const THEME_KEY = 'nexus_theme'
+const WINDOW_KEY = 'nexus_window'
 const TAP_THRESHOLD = 8
 
 export type ThemeMode = 'dark' | 'light'
@@ -453,7 +454,7 @@ export default function Terminal({ token }: Props) {
   const userScrolledRef = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const [windows, setWindows] = useState<TmuxWindow[]>([])
-  const [activeWindowIndex, setActiveWindowIndex] = useState(0)
+  const [activeWindowIndex, setActiveWindowIndex] = useState(() => parseInt(localStorage.getItem(WINDOW_KEY) || '0', 10))
   const [showSettings, setShowSettings] = useState(false)
   const [showNewSession, setShowNewSession] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
@@ -608,10 +609,24 @@ export default function Terminal({ token }: Props) {
       // 首次加载：同步到 tmux 当前活跃窗口
       // 后续轮询：只有当前窗口消失时才 fallback，避免反复重连 WebSocket
       const currentStillExists = wins.some((w: TmuxWindow) => w.index === activeWindowIndexRef.current)
-      if (!windowsInitializedRef.current || !currentStillExists) {
+      if (!windowsInitializedRef.current) {
         windowsInitializedRef.current = true
+        // 首次加载：优先使用 localStorage 记忆的窗口，否则用 tmux 活跃窗口
+        if (!currentStillExists) {
+          const active = wins.find((w: TmuxWindow) => w.active)
+          if (active) {
+            setActiveWindowIndex(active.index)
+            localStorage.setItem(WINDOW_KEY, String(active.index))
+          }
+        }
+        // 如果 currentStillExists，保持 persisted window 不变
+      } else if (!currentStillExists) {
+        // 轮询时当前窗口消失：fallback 到 tmux 活跃窗口
         const active = wins.find((w: TmuxWindow) => w.active)
-        if (active) setActiveWindowIndex(active.index)
+        if (active) {
+          setActiveWindowIndex(active.index)
+          localStorage.setItem(WINDOW_KEY, String(active.index))
+        }
       }
     } catch {
       // ignore
@@ -635,6 +650,7 @@ export default function Terminal({ token }: Props) {
       })
       if (r.ok) {
         setActiveWindowIndex(index)
+        localStorage.setItem(WINDOW_KEY, String(index))
         // 暂停轮询 3 秒，避免 optimistic 状态被覆盖
         pausePollingRef.current = true
         setTimeout(() => { pausePollingRef.current = false }, 3000)
@@ -715,6 +731,7 @@ export default function Terminal({ token }: Props) {
     // 重置窗口状态
     setWindows([])
     setActiveWindowIndex(0)
+    localStorage.removeItem(WINDOW_KEY)
     windowsInitializedRef.current = false
     windowsLoadedRef.current = false
     setWindowsLoaded(false)
