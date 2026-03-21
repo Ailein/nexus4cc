@@ -911,9 +911,11 @@ wss.on('connection', (ws, req) => {
     const ent = ptyMap.get(key);
     if (!ent) return;
     const str = typeof msg === 'string' ? msg : msg.toString();
+    let isResize = false;
     try {
       const data = JSON.parse(str);
-      if (data.type === 'resize' && data.cols && data.rows) {
+      if (data && data.type === 'resize' && data.cols && data.rows) {
+        isResize = true;
         ent.clientSizes.set(ws, { cols: Number(data.cols), rows: Number(data.rows) });
         // Use minimum size across all connected clients to avoid clipping
         let minCols = Number(data.cols), minRows = Number(data.rows);
@@ -923,10 +925,11 @@ wss.on('connection', (ws, req) => {
         }
         ent.pty.resize(Math.max(minCols, 10), Math.max(minRows, 5));
       }
-    } catch {
-      // 非 JSON 消息视为原始键盘输入
-      ent.pty.write(str);
-    }
+    } catch { /* not JSON — fall through to pty.write */ }
+    // Write for all non-resize messages. Previously only the catch branch wrote,
+    // which silently dropped single-digit strings ('1'..'9','0') since
+    // JSON.parse('1') succeeds without throwing.
+    if (!isResize) ent.pty.write(str);
   });
 
   ws.on('close', () => {
