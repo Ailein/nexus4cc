@@ -467,7 +467,6 @@ export default function Terminal({ token }: Props) {
   const attachWindowFnRef = useRef<(index: number) => void>(() => {})
   const [showGuide, setShowGuide] = useState(() => localStorage.getItem('nexus_guide_seen') !== 'true')
   const [isScrolledUp, setIsScrolledUp] = useState(false)
-  const [keyboardVisible, setKeyboardVisible] = useState(false)
   const keyboardVisibleRef = useRef(false)
   const [viewportHeight, setViewportHeight] = useState<number | null>(null)
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
@@ -978,7 +977,10 @@ export default function Terminal({ token }: Props) {
         const deltaY = touchLastY - y  // positive = finger moved up = scroll toward older content
         touchLastY = y
         if (xtermViewport && deltaY !== 0) {
-          xtermViewport.scrollTop -= deltaY
+          // Finger down (deltaY < 0) → scrollTop decreases → older content visible
+          // Finger up  (deltaY > 0) → scrollTop increases → newer content visible
+          // ×1.5 for a more natural, responsive scroll feel
+          xtermViewport.scrollTop += deltaY * 1.5
           // userScrolledRef is updated via term.onScroll listener
         }
       }
@@ -1006,8 +1008,16 @@ export default function Terminal({ token }: Props) {
         return
       }
       if (Math.abs(dy) < TAP_THRESHOLD && Math.abs(dx) < TAP_THRESHOLD) {
+        // Tap toggles keyboard: tap to show, tap again to hide
+        const xtermTa = termRef.current?.textarea
         if (keyboardVisibleRef.current) {
-          inputRef.current?.focus({ preventScroll: true })
+          keyboardVisibleRef.current = false
+          if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
+          if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
+        } else {
+          keyboardVisibleRef.current = true
+          if (inputRef.current) { inputRef.current.inputMode = 'text'; inputRef.current.focus() }
+          if (xtermTa) xtermTa.inputMode = 'text'
         }
       }
     }
@@ -1192,27 +1202,6 @@ export default function Terminal({ token }: Props) {
     onOpenTasks: () => setShowTasks(true),
     onUpload: handleFileUpload,
     runningTaskCount,
-    onToggleKeyboard: () => {
-      const xtermTa = termRef.current?.textarea
-      if (keyboardVisibleRef.current) {
-        keyboardVisibleRef.current = false
-        setKeyboardVisible(false)
-        if (inputRef.current) {
-          inputRef.current.inputMode = 'none'
-          inputRef.current.blur()
-        }
-        if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
-      } else {
-        keyboardVisibleRef.current = true
-        setKeyboardVisible(true)
-        if (inputRef.current) {
-          inputRef.current.inputMode = 'text'
-          inputRef.current.focus()
-        }
-        if (xtermTa) xtermTa.inputMode = 'text'
-      }
-    },
-    keyboardActive: keyboardVisible,
   }
 
   return (

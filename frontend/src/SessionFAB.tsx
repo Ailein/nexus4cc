@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
 const FAB_POS_KEY = 'nexus_fab_pos'
-const DRAG_THRESHOLD = 8
+const DRAG_THRESHOLD = 20
 
 interface Pos { x: number; y: number }
 

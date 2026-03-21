@@ -18,8 +18,6 @@ interface Props {
   onOpenTasks?: () => void
   onUpload?: () => void
   runningTaskCount?: number
-  onToggleKeyboard?: () => void
-  keyboardActive?: boolean
 }
 
 const KEY_MAP = Object.fromEntries(ALL_KEYS.map(k => [k.id, k]))
@@ -62,7 +60,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, selectionMode, onToggleSelectionMode, onOpenSettings, onOpenTasks, onUpload, runningTaskCount, onToggleKeyboard, keyboardActive }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, selectionMode, onToggleSelectionMode, onOpenSettings, onOpenTasks, onUpload, runningTaskCount }: Props) {
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [collapsed, setCollapsed]     = useState(() => {
     const saved = localStorage.getItem(COLLAPSED_KEY)
@@ -389,7 +387,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             onPointerDown={(e) => { e.preventDefault(); onToggleSelectionMode() }}
             title={selectionMode ? '退出复制模式' : '进入复制模式'}
           >
-            {selectionMode ? '✓' : '⎘'}
+            {selectionMode ? (
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+          )}
           </button>
           {onOpenSettings && (
             <button style={{...s.iconBtnPC, color: tc.iconColor}} onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }} title="设置">
@@ -452,7 +454,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           onPointerDown={(e) => { e.preventDefault(); onToggleSelectionMode() }}
           title={selectionMode ? '退出复制模式' : '进入复制模式'}
         >
-          {selectionMode ? '✓' : '⎘'}
+          {selectionMode ? (
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+          )}
         </button>
         {/* ⚙ quick menu */}
         <div style={{ position: 'relative' }}>
@@ -461,14 +467,14 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             style={{...s.iconBtn, color: tc.iconColor}}
             onPointerDown={(e) => {
               e.preventDefault()
-              if (!showQuickMenu && menuBtnRef.current) {
-                const rect = menuBtnRef.current.getBoundingClientRect()
-                setMenuPos({ bottom: window.innerHeight - rect.top + 6, right: window.innerWidth - rect.right })
+              if (!showQuickMenu) {
+                const tbH = rootRef.current?.offsetHeight ?? 56
+                setMenuPos({ bottom: tbH + 4, right: 4 })
               }
               setShowQuickMenu(v => !v)
             }}
             title="更多"
-          >⚙</button>
+          ><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg></button>
           {showQuickMenu && createPortal(
             <>
               <div style={{ position: 'fixed', inset: 0, zIndex: 300 }} onPointerDown={() => setShowQuickMenu(false)} />
@@ -497,11 +503,6 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             document.body
           )}
         </div>
-        <button
-          style={keyboardActive ? {...s.copyBtnActive, marginLeft: 'auto'} : {...s.iconBtn, color: tc.iconColor, marginLeft: 'auto'}}
-          onPointerDown={(e) => { e.preventDefault(); onToggleKeyboard?.() }}
-          title={keyboardActive ? '隐藏键盘' : '显示键盘'}
-        >⌨</button>
       </div>
 
       {renderKeys(config.pinned)}
@@ -605,17 +606,19 @@ const s: Record<string, React.CSSProperties> = {
   },
   copyBtn: {
     background: 'transparent',
-    border: '1px solid var(--nexus-border)',
+    border: 'none',
     borderRadius: 4,
     color: 'var(--nexus-text2)',
     cursor: 'pointer',
     fontSize: 12,
-    padding: '4px 10px',
-    fontWeight: 500,
+    padding: '4px 8px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   copyBtnActive: {
     background: 'rgba(59,130,246,0.15)',
-    border: '1px solid #3b82f6',
+    border: 'none',
     borderRadius: 4,
     color: '#3b82f6',
     cursor: 'pointer',
