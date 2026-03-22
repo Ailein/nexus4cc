@@ -2,11 +2,6 @@ import { useState, useEffect } from 'react'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 
-interface Workspace {
-  name: string
-  path: string
-}
-
 interface BrowseResult {
   path: string
   parent: string | null
@@ -37,9 +32,6 @@ function useIsDesktop() {
 
 export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) {
   const isDesktop = useIsDesktop()
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '~')
   const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '~')
   const [shellType, setShellType] = useState<'claude' | 'bash'>('claude')
@@ -54,22 +46,6 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   const [browseError, setBrowseError] = useState<string | null>(null)
 
   const headers = { Authorization: `Bearer ${token}` }
-
-  async function fetchWorkspaces() {
-    setLoading(true)
-    setError(null)
-    try {
-      const r = await fetch('/api/workspaces', { headers })
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const data = await r.json()
-      setWorkspaces(data)
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '加载失败')
-      setWorkspaces([])
-    } finally {
-      setLoading(false)
-    }
-  }
 
   async function browseDir(path: string | null) {
     setBrowseLoading(true)
@@ -90,7 +66,6 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   }
 
   useEffect(() => {
-    fetchWorkspaces()
     fetchConfigs()
     browseDir(null)
   }, [])
@@ -295,42 +270,6 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
             )}
           </div>
 
-          {/* 常用工作区快捷方式 */}
-          {workspaces.length > 0 && (
-            <div style={s.section}>
-              <div style={s.sectionHeader}>
-                <span style={s.sectionTitle}>快捷工作区</span>
-                <button style={s.refreshBtn} onPointerDown={fetchWorkspaces}>刷新</button>
-              </div>
-              {error && <div style={s.errorMsg}>{error}</div>}
-              {loading && <div style={s.emptyMsg}>加载中...</div>}
-              <div style={s.workspaceList}>
-                {workspaces.map(ws => (
-                  <div
-                    key={ws.path}
-                    style={{
-                      ...s.workspaceItem,
-                      ...(selectedPath === ws.path ? s.workspaceItemSelected : {}),
-                    }}
-                    onPointerDown={() => handleSelect(ws.path)}
-                  >
-                    <span style={s.workspaceIcon}>📁</span>
-                    <span style={s.workspaceName}>{ws.name}</span>
-                    <button
-                      style={s.browseEnterBtn}
-                      onPointerDown={(e) => {
-                        e.stopPropagation()
-                        browseDir(ws.path)
-                      }}
-                      title="浏览该目录"
-                    >
-                      <Icon name="arrowRight" size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* 底部按钮 */}
@@ -382,7 +321,6 @@ const s: Record<string, React.CSSProperties> = {
 
   // 工作区列表
   workspaceList: { display: 'flex', flexDirection: 'column' as const, gap: 2 },
-  workspaceItem: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 6, cursor: 'pointer', background: 'transparent' },
   workspaceItemSelected: { background: 'var(--nexus-bg2)', border: '1px solid var(--nexus-accent)' },
   workspaceIcon: { fontSize: 14, flexShrink: 0 },
   workspaceName: { fontSize: 14, color: 'var(--nexus-text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const },
