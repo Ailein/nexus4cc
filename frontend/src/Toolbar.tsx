@@ -14,12 +14,9 @@ interface Props {
   termRef: RefObject<Terminal | null>
   themeMode: ThemeMode
   onToggleTheme: () => void
-  selectionMode: boolean
-  onToggleSelectionMode: () => void
   onOpenSettings?: () => void
   onOpenSessions?: () => void
   onOpenTasks?: () => void
-  onOpenScrollback?: () => void
   onUpload?: () => void
   runningTaskCount?: number
 }
@@ -64,7 +61,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, selectionMode, onToggleSelectionMode, onOpenSettings, onOpenTasks, onOpenScrollback, onUpload, runningTaskCount }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onOpenTasks, onUpload, runningTaskCount }: Props) {
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [collapsed, setCollapsed]     = useState(() => {
     const saved = localStorage.getItem(COLLAPSED_KEY)
@@ -390,25 +387,9 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           <button style={s.iconBtnPC} onPointerDown={(e) => { e.preventDefault(); onToggleTheme() }}>
             <Icon name={themeMode === 'dark' ? 'sun' : 'moon'} size={18} />
           </button>
-          <button
-            style={selectionMode ? s.copyBtnActivePC : s.copyBtnPC}
-            onPointerDown={(e) => { e.preventDefault(); onToggleSelectionMode() }}
-            title={selectionMode ? '退出复制模式' : '进入复制模式'}
-          >
-            <Icon name={selectionMode ? 'check' : 'copy'} size={16} />
-          </button>
           {onOpenSettings && (
             <button style={s.iconBtnPC} onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }} title="设置">
               <Icon name="settings" size={18} />
-            </button>
-          )}
-          {onOpenScrollback && (
-            <button
-              style={s.iconBtnPC}
-              onPointerDown={(e) => { e.preventDefault(); onOpenScrollback() }}
-              title="查看历史"
-            >
-              <Icon name="history" size={18} />
             </button>
           )}
           {/* 固定键：宽屏折叠时隐藏，仅展开时显示 */}
@@ -462,13 +443,6 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); setCollapsed(v => { const n = !v; localStorage.setItem(COLLAPSED_KEY, String(n)); return n }) }}>
           <Icon name={collapsed ? 'chevronUp' : 'chevronDown'} size={18} />
         </button>
-        <button
-          style={selectionMode ? s.copyBtnActive : s.copyBtn}
-          onPointerDown={(e) => { e.preventDefault(); onToggleSelectionMode() }}
-          title={selectionMode ? '退出复制模式' : '进入复制模式'}
-        >
-          <Icon name={selectionMode ? 'check' : 'copy'} size={16} />
-        </button>
         {/* quick menu */}
         <div style={{ position: 'relative' }}>
           <button
@@ -513,15 +487,6 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             document.body
           )}
         </div>
-        {onOpenScrollback && (
-          <button
-            style={s.iconBtn}
-            onPointerDown={(e) => { e.preventDefault(); onOpenScrollback() }}
-            title="查看历史"
-          >
-            <Icon name="history" size={18} />
-          </button>
-        )}
       </div>
 
       {renderKeys(config.pinned)}
@@ -608,31 +573,6 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 14,
     padding: '4px 8px',
     borderRadius: 4,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  copyBtn: {
-    background: 'transparent',
-    border: 'none',
-    borderRadius: 4,
-    color: 'var(--nexus-text2)',
-    cursor: 'pointer',
-    fontSize: 12,
-    padding: '4px 8px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  copyBtnActive: {
-    background: 'rgba(59,130,246,0.15)',
-    border: 'none',
-    borderRadius: 4,
-    color: 'var(--nexus-accent)',
-    cursor: 'pointer',
-    fontSize: 12,
-    padding: '4px 10px',
-    fontWeight: 500,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -904,33 +844,6 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 13,
     padding: '3px 6px',
     borderRadius: 4,
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  copyBtnPC: {
-    background: 'transparent',
-    border: '1px solid var(--nexus-border)',
-    borderRadius: 4,
-    color: 'var(--nexus-text2)',
-    cursor: 'pointer',
-    fontSize: 13,
-    padding: '4px 8px',
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  copyBtnActivePC: {
-    background: 'rgba(59,130,246,0.15)',
-    border: '1px solid var(--nexus-accent)',
-    borderRadius: 4,
-    color: 'var(--nexus-accent)',
-    cursor: 'pointer',
-    fontSize: 13,
-    padding: '4px 8px',
-    fontWeight: 600,
     flexShrink: 0,
     display: 'flex',
     alignItems: 'center',

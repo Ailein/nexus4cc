@@ -111,75 +111,6 @@ initCssVars(getInitialTheme())
 
 // Agent 状态推断（F-15）
 // 复制模式覆盖层组件
-function CopyModeOverlay({ termRef, themeMode }: { termRef: React.MutableRefObject<XTerm | null>, themeMode: ThemeMode }) {
-  const [lines, setLines] = useState<string[]>([])
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const term = termRef.current
-    if (!term) return
-
-    // 获取终端缓冲区内容
-    const buffer = term.buffer.active
-    const lineCount = buffer.length
-    const extractedLines: string[] = []
-
-    for (let i = 0; i < lineCount; i++) {
-      const line = buffer.getLine(i)
-      if (line) {
-        extractedLines.push(line.translateToString(true))
-      }
-    }
-
-    setLines(extractedLines)
-
-    // 滚动到底部
-    setTimeout(() => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-      }
-    }, 10)
-  }, [termRef])
-
-  const bg = themeMode === 'dark' ? '#1a1a2e' : '#ffffff'
-  const fg = themeMode === 'dark' ? '#e2e8f0' : '#333333'
-  const fontFamily = 'Menlo, Monaco, "Cascadia Code", "Fira Code", monospace'
-  const fontSize = termRef.current?.options.fontSize ?? 14
-
-  return (
-    <div
-      ref={scrollRef}
-      style={{
-        position: 'fixed',
-        top: 44, // 提示条高度
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: bg,
-        color: fg,
-        fontFamily,
-        fontSize,
-        lineHeight: '1.4',
-        overflow: 'auto',
-        zIndex: 99,
-        padding: 8,
-        whiteSpace: 'pre',
-        userSelect: 'text',
-        WebkitUserSelect: 'text',
-      }}
-      onClick={() => {
-        // 点击空白处不关闭，只有点击按钮才关闭
-      }}
-    >
-      {lines.map((line, i) => (
-        <div key={i} style={{ minHeight: '1.4em' }}>
-          {line || '\u00A0'}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function Sidebar({
   windows,
   activeIndex,
@@ -450,9 +381,7 @@ export default function Terminal({ token }: Props) {
   const [showNewSession, setShowNewSession] = useState(false)
   const [showSessionDrawer, setShowSessionDrawer] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
-  const [selectionMode, setSelectionMode] = useState(false)
-  const selectionModeRef = useRef(selectionMode)
-  selectionModeRef.current = selectionMode
+
   const [isWidePC, setIsWidePC] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768)
   const [isConnecting, setIsConnecting] = useState(false)
   const hasConnectedRef = useRef(false)
@@ -949,7 +878,6 @@ export default function Terminal({ token }: Props) {
     }
 
     function onTouchStart(e: TouchEvent) {
-      if (selectionModeRef.current) return
       if (e.touches.length === 2) {
         isPinching = true
         pinchStartDist = getTouchDist(e)
@@ -965,7 +893,6 @@ export default function Terminal({ token }: Props) {
     }
 
     function onTouchMove(e: TouchEvent) {
-      if (selectionModeRef.current) return
       e.preventDefault()
       if (isPinching && e.touches.length === 2) {
         const dist = getTouchDist(e)
@@ -1004,7 +931,6 @@ export default function Terminal({ token }: Props) {
     }
 
     function onTouchEnd(e: TouchEvent) {
-      if (selectionModeRef.current) return
       if (isPinching) {
         isPinching = false
         return
@@ -1308,59 +1234,14 @@ export default function Terminal({ token }: Props) {
     termRef,
     themeMode,
     onToggleTheme: toggleTheme,
-    selectionMode,
-    onToggleSelectionMode: () => setSelectionMode(v => !v),
     onOpenSettings: () => setShowSettings(true),
     onOpenTasks: () => setShowTasks(true),
-    onOpenScrollback: fetchScrollback,
     onUpload: handleFileUpload,
     runningTaskCount,
   }
 
   return (
     <div style={{ ...styles.wrapper, ...(viewportHeight && !isWidePC ? { height: viewportHeight } : {}) }}>
-      {selectionMode && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            padding: '12px 16px',
-            background: '#1e3a5f',
-            color: '#fff',
-            fontSize: 13,
-            textAlign: 'center',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 12,
-          }}
-        >
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="copy" size={16} />复制模式：长按下方文本选择复制</span>
-          <button
-            onClick={() => setSelectionMode(false)}
-            style={{
-              background: '#3b82f6',
-              border: 'none',
-              borderRadius: 4,
-              color: '#fff',
-              padding: '4px 12px',
-              fontSize: 12,
-              cursor: 'pointer',
-            }}
-          >
-            完成
-          </button>
-        </div>
-      )}
-      {selectionMode && (
-        <CopyModeOverlay
-          termRef={termRef}
-          themeMode={themeMode}
-        />
-      )}
       <input
         ref={inputRef}
         style={styles.hiddenInput}
