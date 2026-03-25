@@ -271,11 +271,10 @@ export default function SessionManagerV2({
   const handleCloseChannel = async (channel: Channel) => {
     setLongPressMenu(null)
     setChannelMenu(null)
-    if (!window.confirm(`确定要关闭 Channel "${channel.name}" 吗？`)) return
 
     try {
-      const r = await fetch(`/api/sessions/${channel.index}/kill?session=${encodeURIComponent(currentProject)}`, {
-        method: 'POST',
+      const r = await fetch(`/api/sessions/${channel.index}?session=${encodeURIComponent(currentProject)}`, {
+        method: 'DELETE',
         headers,
       })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
