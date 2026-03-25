@@ -1346,13 +1346,18 @@ export default function Terminal({ token }: Props) {
     ;(e.currentTarget as HTMLInputElement).value = ''
   }
 
-  // Track keyboard visibility for input handling (not for layout height)
+  // Track keyboard visibility and adjust layout height on mobile
+  const [vvHeight, setVvHeight] = useState<number | null>(null)
   useEffect(() => {
-    if (isWidePC) return
+    if (isWidePC) {
+      setVvHeight(null)
+      return
+    }
     const vv = window.visualViewport
     if (!vv) return
     const handleResize = () => {
       keyboardVisibleRef.current = vv.height < window.innerHeight * 0.8
+      setVvHeight(Math.round(vv.height))
     }
     handleResize()
     vv.addEventListener('resize', handleResize)
@@ -1467,7 +1472,7 @@ export default function Terminal({ token }: Props) {
   }
 
   return (
-    <div style={styles.wrapper}>
+    <div style={{ ...styles.wrapper, height: vvHeight ?? '100dvh' }}>
       <input
         ref={inputRef}
         style={styles.hiddenInput}
