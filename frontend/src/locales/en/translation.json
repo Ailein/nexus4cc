@@ -46,8 +46,8 @@
     "noSubDirs": "No subdirectories",
     "dirClickHint": "Click to select, double-click to enter"
   },
-  "newWindow": {
-    "title": "New Window",
+  "newChannel": {
+    "title": "New Channel",
     "shellType": "Shell Type",
     "profile": "Profile",
     "profileDefault": "Default"

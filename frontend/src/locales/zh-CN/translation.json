@@ -46,8 +46,8 @@
     "noSubDirs": "无子目录",
     "dirClickHint": "单击选中，双击进入"
   },
-  "newWindow": {
-    "title": "新建窗口",
+  "newChannel": {
+    "title": "新建频道",
     "shellType": "Shell 类型",
     "profile": "Profile",
     "profileDefault": "默认"

@@ -49,7 +49,7 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
       <div className="bg-nexus-bg border border-nexus-border rounded-xl flex flex-col text-nexus-text w-full max-w-[360px] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
         {/* 标题 */}
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border">
-          <span className="text-base font-semibold">{t('newWindow.title')}</span>
+          <span className="text-base font-semibold">{t('newChannel.title')}</span>
           <button
             className="bg-transparent border-none text-nexus-text-2 cursor-pointer flex items-center justify-center"
             onPointerDown={onClose}
@@ -61,7 +61,7 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
         <div className="px-4 py-4 flex flex-col gap-4">
           {/* Shell 类型 */}
           <div>
-            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2">{t('newWindow.shellType')}</div>
+            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2">{t('newChannel.shellType')}</div>
             <div className="flex flex-col gap-2">
               <label className="flex items-center gap-2 text-nexus-text text-sm cursor-pointer">
                 <input
@@ -89,13 +89,13 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
           {/* Profile */}
           {shellType === 'claude' && configs.length > 0 && (
             <div>
-              <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2">{t('newWindow.profile')}</div>
+              <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-2">{t('newChannel.profile')}</div>
               <select
                 className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-2.5 py-2 w-full outline-none"
                 value={selectedProfile}
                 onChange={e => handleProfileChange(e.target.value)}
               >
-                <option value="">{t('newWindow.profileDefault')}</option>
+                <option value="">{t('newChannel.profileDefault')}</option>
                 {configs.map(cfg => (
                   <option key={cfg.id} value={cfg.id}>{cfg.label}</option>
                 ))}

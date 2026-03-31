@@ -183,20 +183,20 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
             <button
               style={{ ...s.iconBtn, fontSize: 11, padding: '0 6px', maxWidth: 64, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
               onPointerDown={(e) => { e.preventDefault(); setShowSessionPicker(v => !v) }}
-              title={`当前 session: ${activeSession}`}
+              title={`${t('tabBar.currentSession')} ${activeSession}`}
             >{activeSession}</button>
           )}
-          <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onAdd() }} title="新建会话">+</button>
-          {onUpload && <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onUpload() }} title="上传文件"><Icon name="paperclip" size={18} /></button>}
+          <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onAdd() }} title={t('tabBar.newSession')}>+</button>
+          {onUpload && <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onUpload() }} title={t('tabBar.upload')}><Icon name="paperclip" size={18} /></button>}
           {onOpenTasks && (
-            <button style={{ ...s.iconBtn, position: 'relative' }} onPointerDown={(e) => { e.preventDefault(); onOpenTasks() }} title="任务面板">
+            <button style={{ ...s.iconBtn, position: 'relative' }} onPointerDown={(e) => { e.preventDefault(); onOpenTasks() }} title={t('toolbar.tasks')}>
               <Icon name="clipboard" size={18} />
               {!!runningTaskCount && (
                 <span style={{ position: 'absolute', top: 2, right: 2, background: 'var(--nexus-success)', borderRadius: '50%', width: 8, height: 8, display: 'block' }} />
               )}
             </button>
           )}
-          <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }} title="设置"><Icon name="settings" size={18} /></button>
+          <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }} title={t('settings.title')}><Icon name="settings" size={18} /></button>
         </div>
       </div>
 

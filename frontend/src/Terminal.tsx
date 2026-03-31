@@ -310,10 +310,10 @@ function Sidebar({
           <button
             className="flex-1 bg-transparent border border-nexus-border rounded-lg text-nexus-text-2 cursor-pointer text-sm py-2 px-2 flex items-center justify-center gap-1.5"
             onClick={onNewWindow}
-            title={t('newWindow.title')}
+            title={t('newChannel.title')}
           >
             <Icon name="plus" size={14} />
-            <span>{t('newWindow.title')}</span>
+            <span>{t('newChannel.title')}</span>
           </button>
         </div>
 
@@ -396,10 +396,10 @@ function Sidebar({
           <button
             className="flex-1 bg-transparent border border-nexus-border rounded-md text-nexus-text-2 cursor-pointer text-xs py-1.5 px-2 flex items-center justify-center gap-1"
             onClick={onOpenSettings}
-            title="配置管理"
+            title={t('settings.title')}
           >
             <Icon name="settings" size={14} />
-            <span>配置</span>
+            <span>{t('toolbar.settings')}</span>
           </button>
           {onOpenShortcuts && (
             <button
