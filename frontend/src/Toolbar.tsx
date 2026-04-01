@@ -17,12 +17,10 @@ interface Props {
   onToggleTheme: () => void
   onOpenSettings?: () => void
   onOpenSessions?: () => void
-  onOpenTasks?: () => void
   onUpload?: () => void
   onUploadFile?: (file: File) => void
   onOpenFiles?: () => void
   onFitTerminal?: () => void
-  runningTaskCount?: number
   /** When true: renders as a compact sidebar section (no theme/settings, flex-wrap key grid) */
   embedded?: boolean
   /** Controlled collapsed state (optional). If provided, component acts as controlled. */
@@ -71,7 +69,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onOpenTasks, onUploadFile, onOpenFiles, onFitTerminal, runningTaskCount, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onOpenFiles, onFitTerminal, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const isControlled = controlledCollapsed !== undefined
@@ -576,12 +574,6 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               <Icon name="folder" size={18} />
             </button>
           )}
-          {onOpenTasks && (
-            <button className={`${iconBtnPCClass} relative`} onPointerDown={(e) => { e.preventDefault(); onOpenTasks() }} title={t('toolbar.tasks')}>
-              <Icon name="clipboard" size={18} />
-              {!!runningTaskCount && <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-nexus-success rounded-full" />}
-            </button>
-          )}
           {/* 上传按钮 */}
           <button
             ref={uploadBtnRef}
@@ -717,13 +709,6 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); setEditing(true); setShowQuickMenu(false) }}>
                   <Icon name="pencil" size={16} /><span>{t('toolbar.editShortcuts')}</span>
                 </button>
-                {onOpenTasks && (
-                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenTasks(); setShowQuickMenu(false) }}>
-                    <Icon name="clipboard" size={16} />
-                    <span>{t('toolbar.tasks')}</span>
-                    {!!runningTaskCount && <span className="ml-auto bg-nexus-success text-white rounded-lg px-1.5 py-[1px] text-[11px]">{runningTaskCount}</span>}
-                  </button>
-                )}
                 {onOpenFiles && (
                   <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenFiles(); setShowQuickMenu(false) }}>
                     <Icon name="folder" size={16} />

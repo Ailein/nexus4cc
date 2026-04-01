@@ -156,8 +156,7 @@ export default function Terminal({ token }: Props) {
   const pasteFileRef = useRef<HTMLInputElement>(null)
   const uploadFileRef = useRef<(file: File) => Promise<void>>(null!)
   const [windowOutputs, setWindowOutputs] = useState<Record<number, { output: string; clients: number; idleMs: number; connected: boolean }>>({})
-  const [runningTaskCount, setRunningTaskCount] = useState(0)
-  const scrollPositionsRef = useRef<Record<number, number>>({})
+    const scrollPositionsRef = useRef<Record<number, number>>({})
   const windowsRef = useRef<TmuxWindow[]>([])
   windowsRef.current = windows
   const attachWindowFnRef = useRef<(index: number) => void>(() => {})
@@ -300,13 +299,13 @@ export default function Terminal({ token }: Props) {
   // 动态页面标题：反映当前窗口和 Agent 状态
   useEffect(() => {
     const win = windows.find(w => w.index === activeWindowIndex)
-    const taskBadge = runningTaskCount > 0 ? `(${runningTaskCount}) ` : ''
+    const taskBadge = ''
     if (!win) { document.title = `${taskBadge}Nexus`; return }
     const status = getWindowStatus(windowOutputs[activeWindowIndex])
     const statusSymbol = status === 'running' ? '⚡' : status === 'waiting' ? '⏳' : status === 'shell' ? '💤' : ''
     document.title = `${taskBadge}${statusSymbol ? statusSymbol + ' ' : ''}${win.name} — Nexus`
     return () => { document.title = 'Nexus' }
-  }, [windows, activeWindowIndex, windowOutputs, runningTaskCount])
+  }, [windows, activeWindowIndex, windowOutputs])
 
   // 定期刷新窗口列表（每 2 秒），保持与 tmux 同步
   useEffect(() => {
@@ -333,22 +332,7 @@ export default function Terminal({ token }: Props) {
     return () => clearInterval(interval)
   }, [windows.length, token, activeTmuxSession])
 
-  // 轮询运行中任务数量（用于徽标显示）
-  useEffect(() => {
-    async function fetchTaskCount() {
-      try {
-        const r = await fetch('/api/tasks', { headers: { Authorization: `Bearer ${token}` } })
-        if (r.ok) {
-          const tasks = await r.json()
-          setRunningTaskCount(tasks.filter((t: { status: string }) => t.status === 'running').length)
-        }
-      } catch {}
-    }
-    fetchTaskCount()
-    const interval = setInterval(fetchTaskCount, 5000)
-    return () => clearInterval(interval)
-  }, [token])
-
+  
   const scrollToBottom = useCallback(() => {
     termRef.current?.scrollToBottom()
     userScrolledRef.current = false
@@ -770,7 +754,7 @@ export default function Terminal({ token }: Props) {
     function onGlobalKeyDown(e: KeyboardEvent) {
       // 仅在PC宽屏模式且没有打开弹层时处理
       if (window.innerWidth < 768) return
-      const anyOverlayOpen = showSessionDrawer || showTasks || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles
+      const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles
       if (anyOverlayOpen) return
 
       // 白名单：这些快捷键保留给浏览器/应用使用
@@ -1247,7 +1231,7 @@ export default function Terminal({ token }: Props) {
 
   // Overlay guard: when any overlay opens, set xterm textarea to readOnly
   // to prevent virtual keyboard from appearing when keyboard dismisses
-  const anyOverlayOpen = showSessionDrawer || showTasks || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles
+  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles
   useEffect(() => {
     if (isWidePC) return
     const ta = termRef.current?.textarea
@@ -1316,12 +1300,10 @@ export default function Terminal({ token }: Props) {
     themeMode,
     onToggleTheme: toggleTheme,
     onOpenSettings: () => setShowGeneralSettings(true),
-    onOpenTasks: () => setShowTasks(true),
-    onOpenFiles: () => setShowFiles(true),
+        onOpenFiles: () => setShowFiles(true),
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
-    runningTaskCount,
-    collapsed: toolbarCollapsed,
+        collapsed: toolbarCollapsed,
     onCollapsedChange: setToolbarCollapsed,
   }
 
@@ -1436,16 +1418,6 @@ export default function Terminal({ token }: Props) {
                       <Icon name="plus" size={18} />
                     </button>
 
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setShowTasks(true); }}
-                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer relative"
-                      title="任务面板"
-                    >
-                      <Icon name="clipboard" size={18} />
-                      {!!runningTaskCount && (
-                        <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-nexus-success" />
-                      )}
-                    </button>
 
                     <button
                       onClick={(e) => { e.stopPropagation(); setShowFiles(true); }}
@@ -1652,18 +1624,7 @@ export default function Terminal({ token }: Props) {
         </>
       )}
 
-      {showTasks && (
-        <Suspense fallback={null}>
-          <TaskPanel
-            token={token}
-            windows={windows}
-            activeWindowName={windows.find(w => w.index === activeWindowIndex)?.name || ''}
-            tmuxSession={activeTmuxSession}
-            onClose={() => setShowTasks(false)}
-          />
-        </Suspense>
-      )}
-      {showFiles && (
+            {showFiles && (
         <Suspense fallback={null}>
           <FilePanel
             token={token}
@@ -1731,8 +1692,7 @@ export default function Terminal({ token }: Props) {
             <ul className="text-nexus-text-2 leading-relaxed text-sm pl-5 my-2">
               <li>黑色区域是终端，点击聚焦后可键盘输入</li>
               <li>底部工具栏提供 Esc/Tab/^C 等快捷键</li>
-              <li className="flex items-center gap-1.5"><Icon name="clipboard" size={14} />任务面板：后台发送 claude -p 任务</li>
-              <li className="flex items-center gap-1.5"><Icon name="paperclip" size={14} />上传图片/文件到当前 session 目录</li>
+                            <li className="flex items-center gap-1.5"><Icon name="paperclip" size={14} />上传图片/文件到当前 session 目录</li>
               <li>📁 新项目：在选定目录创建窗口</li>
               <li>➕ 新窗口：在当前项目目录创建窗口</li>
             </ul>

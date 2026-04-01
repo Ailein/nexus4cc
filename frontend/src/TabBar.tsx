@@ -16,7 +16,6 @@ interface Props {
   onClose: (index: number) => void
   onAdd: () => void
   onOpenSettings: () => void
-  onOpenTasks?: () => void
   onUpload?: () => void
   onRename?: (index: number, name: string) => void
   token?: string
@@ -24,11 +23,10 @@ interface Props {
   activeSession?: string
   onSwitchSession?: (session: string) => void
   windowOutputs?: Record<number, { output: string; clients: number; idleMs: number; connected: boolean }>
-  runningTaskCount?: number
   position?: 'top' | 'bottom'
 }
 
-export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd, onOpenSettings, onOpenTasks, onUpload, onRename, token, sessions, activeSession, onSwitchSession, windowOutputs: windowOutputsProp, runningTaskCount, position = 'top' }: Props) {
+export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd, onOpenSettings, onUpload, onRename, token, sessions, activeSession, onSwitchSession, windowOutputs: windowOutputsProp, position = 'top' }: Props) {
   const { t } = useTranslation()
   const [menuIndex, setMenuIndex] = useState<number | null>(null)
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 })
@@ -188,14 +186,6 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
           )}
           <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onAdd() }} title={t('tabBar.newSession')}>+</button>
           {onUpload && <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onUpload() }} title={t('tabBar.upload')}><Icon name="paperclip" size={18} /></button>}
-          {onOpenTasks && (
-            <button style={{ ...s.iconBtn, position: 'relative' }} onPointerDown={(e) => { e.preventDefault(); onOpenTasks() }} title={t('toolbar.tasks')}>
-              <Icon name="clipboard" size={18} />
-              {!!runningTaskCount && (
-                <span style={{ position: 'absolute', top: 2, right: 2, background: 'var(--nexus-success)', borderRadius: '50%', width: 8, height: 8, display: 'block' }} />
-              )}
-            </button>
-          )}
           <button style={s.iconBtn} onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }} title={t('settings.title')}><Icon name="settings" size={18} /></button>
         </div>
       </div>
