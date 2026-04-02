@@ -640,6 +640,13 @@ app.get('/api/projects', authMiddleware, (req, res) => {
         const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
         if (match) path = match[1]
       } catch {}
+      // 没有 NEXUS_CWD，尝试取第一个 window 的 pane_current_path
+      if (!path && windows !== '0') {
+        try {
+          const cwdOutput = execSync(`tmux list-windows -t ${name} -F '#{pane_current_path}' 2>/dev/null | head -1`).toString().trim()
+          if (cwdOutput) path = cwdOutput
+        } catch {}
+      }
       return {
         name,
         path: path || WORKSPACE_ROOT,
