@@ -514,12 +514,12 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             className={iconBtnPCClass}
             onPointerDown={(e) => { e.preventDefault(); setEditing(true) }}
             title={t('toolbar.editShortcuts')}
-          ><Icon name="pencil" size={14} /></button>
+          ><Icon name="pencil" size={18} /></button>
           <button
             className={iconBtnPCClass}
             onPointerDown={(e) => { e.preventDefault(); setCollapsed(v => { const n = !v; localStorage.setItem(COLLAPSED_KEY, String(n)); return n }) }}
             title={collapsed ? t('toolbar.expand') : t('toolbar.collapse')}
-          ><Icon name={collapsed ? 'chevronUp' : 'chevronDown'} size={14} /></button>
+          ><Icon name={collapsed ? 'chevronUp' : 'chevronDown'} size={18} /></button>
         </div>
         {/* Key grid */}
         <div className="flex flex-wrap gap-[3px] px-2 pb-2">
@@ -536,6 +536,31 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             )
           })}
         </div>
+        {/* Bottom actions: upload + settings */}
+        <div className="flex items-center justify-between px-2 py-1.5 border-t border-nexus-border">
+          <div className="flex items-center gap-0.5">
+            {onOpenFiles && (
+              <button
+                className={iconBtnPCClass}
+                onPointerDown={(e) => { e.preventDefault(); onOpenFiles() }}
+                title={t('toolbar.fileList')}
+              ><Icon name="folder" size={18} /></button>
+            )}
+            <button
+              className={iconBtnPCClass}
+              onPointerDown={(e) => { e.preventDefault(); fileInputRef.current?.click() }}
+              title={t('toolbar.pasteUpload')}
+            ><Icon name="paperclip" size={18} /></button>
+          </div>
+          {onOpenSettings && (
+            <button
+              className={iconBtnPCClass}
+              onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }}
+              title={t('toolbar.settings')}
+            ><Icon name="settings" size={18} /></button>
+          )}
+        </div>
+        {fileInputsEl}
         {pasteBoxEl}
       </div>
     )
