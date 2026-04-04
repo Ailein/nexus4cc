@@ -46,7 +46,7 @@ const {
   JWT_SECRET,
   ACC_PASSWORD_HASH,
   TMUX_SESSION = '~',
-  WORKSPACE_ROOT = '/home/librae',
+  WORKSPACE_ROOT = '/workspace',
   PORT = '3000',
   CLAUDE_PROXY = 'http://127.0.0.1:6789',
   TELEGRAM_BOT_TOKEN,
