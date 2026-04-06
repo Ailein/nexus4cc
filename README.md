@@ -14,7 +14,7 @@ WebSocket tmux bridge for AI terminal access. Run Claude Code from any device, m
 - **Web Terminal** — xterm.js with mobile touch support (swipe, pinch-to-zoom)
 - **Configurable Toolbar** — Server-persisted button layouts
 - **Task Panel** — Claude SSE streaming for async tasks
-- **File Browser** — Browse, edit, upload workspace files
+- **File Browser** — Browse, edit, upload workspace files (sort by name / modified / size)
 - **Multi-session** — Switch between tmux sessions instantly
 - **Telegram Bot** — Control AI agents from mobile
 - **PWA** — Installable, dark/light themes

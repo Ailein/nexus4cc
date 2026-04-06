@@ -1,6 +1,6 @@
 # ARCHITECTURE — Nexus 架构现状
 
-**Last Updated**: 2026-04-01  **版本**: v1.0.0  **锚点**: `docs/NORTH-STAR.md`
+**Last Updated**: 2026-04-06  **版本**: v4.3.1  **锚点**: `docs/NORTH-STAR.md`
 
 ---
 
@@ -23,7 +23,7 @@ Telegram Bot（可选）
 
 ---
 
-## 后端（server.js ~954 行，单文件 ESM）
+## 后端（server.js ~1775 行，单文件 ESM）
 
 ### 启动流程
 
@@ -39,24 +39,55 @@ Telegram Bot（可选）
 | Method | Path | Auth | 描述 |
 |---|---|---|---|
 | POST | `/api/auth/login` | 无 | 密码 bcrypt 比对，返回 JWT |
+| **窗口 / 会话** | | | |
 | GET | `/api/sessions` | Bearer | tmux list-windows（指定 session） |
 | POST | `/api/sessions` | Bearer | tmux new-window（claude/bash/profile） |
+| POST | `/api/windows` | Bearer | 新建窗口（附 profile/cwd） |
 | DELETE | `/api/sessions/:id` | Bearer | tmux kill-window |
 | POST | `/api/sessions/:id/attach` | Bearer | tmux select-window |
 | POST | `/api/sessions/:id/rename` | Bearer | tmux rename-window |
 | GET | `/api/sessions/:id/output` | Bearer | 获取窗口最新输出 + 状态 |
+| GET | `/api/sessions/:id/scrollback` | Bearer | 获取完整滚动缓冲区 |
+| GET | `/api/session-cwd` | Bearer | 获取当前 pane 工作目录 |
 | GET | `/api/tmux-sessions` | Bearer | 列出全部 tmux session 名 |
-| GET | `/api/config` | Bearer | 返回 WORKSPACE_ROOT 等配置 |
+| **项目 / Channel** | | | |
+| GET | `/api/projects` | Bearer | 列出 project-channel 树 |
+| POST | `/api/projects` | Bearer | 创建 project |
+| GET | `/api/projects/:name/channels` | Bearer | 列出 project 下的 channel |
+| POST | `/api/projects/:name/channels` | Bearer | 创建 channel（新窗口） |
+| POST | `/api/projects/:name/activate` | Bearer | 激活 project |
+| POST | `/api/projects/:name/rename` | Bearer | 重命名 project |
+| DELETE | `/api/projects/:name` | Bearer | 删除 project |
+| **工作区文件** | | | |
+| GET | `/api/browse` | Bearer | 列出 WORKSPACE_ROOT 子目录 |
 | GET | `/api/workspaces` | Bearer | 扫描 WORKSPACE_ROOT 子目录 |
+| GET | `/api/workspace/files` | Bearer | 列出目录内容（带 stat 信息） |
+| POST | `/api/workspace/mkdir` | Bearer | 创建目录 |
+| POST | `/api/workspace/files` | Bearer | 创建文件 |
+| GET | `/api/workspace/file` | Bearer | 读取文件内容 |
+| PUT | `/api/workspace/file` | Bearer | 写入文件内容 |
+| DELETE | `/api/workspace/entry` | Bearer | 删除文件或目录 |
+| POST | `/api/workspace/rename` | Bearer | 重命名条目 |
+| POST | `/api/workspace/copy` | Bearer | 复制条目 |
+| POST | `/api/workspace/move` | Bearer | 移动条目 |
+| **文件上传** | | | |
+| POST | `/api/upload` | Bearer | 图片/文档上传（终端粘贴用） |
+| POST | `/api/files/upload` | Bearer | 文件上传到工作区 |
+| GET | `/api/files` | Bearer | 列出已上传文件 |
+| DELETE | `/api/files/:date/:filename` | Bearer | 删除单个上传文件 |
+| DELETE | `/api/files/all` | Bearer | 清空所有上传文件 |
+| **配置** | | | |
+| GET | `/api/config` | Bearer | 返回 WORKSPACE_ROOT 等配置 |
 | GET | `/api/configs` | Bearer | 列出 claude profile |
 | POST | `/api/configs/:id` | Bearer | 创建/更新 profile |
 | DELETE | `/api/configs/:id` | Bearer | 删除 profile |
 | GET | `/api/toolbar-config` | Bearer | 读取工具栏配置 |
 | POST | `/api/toolbar-config` | Bearer | 保存工具栏配置 |
-| POST | `/api/upload` | Bearer | multipart 文件上传（图片/文档） |
+| **任务** | | | |
 | GET | `/api/tasks` | Bearer | 列出任务历史（data/tasks.json） |
 | POST | `/api/tasks` | Bearer | 提交任务（SSE 流式输出） |
 | DELETE | `/api/tasks/:id` | Bearer | 删除任务记录 |
+| **Telegram** | | | |
 | POST | `/api/webhooks/telegram` | 无（secret check） | Telegram Bot webhook |
 | GET | `/api/telegram/setup` | Bearer | Telegram Bot 状态信息 |
 | GET | `*` | 无 | SPA fallback → index.html |
@@ -120,9 +151,16 @@ App.tsx（路由）
      │    └── mobile touch handlers（单指滚动、双指缩放、水平滑动切换窗口）
      ├── Toolbar.tsx             ← 可配置按键栏（固定行 + 展开区）
      │    └── toolbarDefaults.ts
-     ├── SessionManager.tsx      ← 新建/切换 session 面板（lazy loaded）
-     ├── WorkspaceSelector.tsx   ← 路径选择器（lazy loaded）
-     └── TaskPanel.tsx           ← claude -p 异步任务 + SSE 流（lazy loaded）
+     ├── GhostShield.tsx         ← 覆盖层守卫（防止意外 keyboard 弹出）
+     ├── SessionFAB.tsx          ← 移动端浮动操作按钮
+     ├── NewWindowDialog.tsx     ← 新建窗口对话框
+     ├── SessionManagerV2.tsx    ← project-channel 双层会话管理（lazy）
+     ├── SessionManager.tsx      ← 旧版 session 面板（legacy，lazy）
+     ├── WorkspaceSelector.tsx   ← 路径选择器（lazy）
+     ├── WorkspaceBrowser.tsx    ← 文件浏览器（排序、右键菜单、lazy）
+     │    └── FilePanel.tsx      ← 文件查看/编辑/Markdown 预览（lazy）
+     ├── GeneralSettings.tsx     ← 通用设置面板（lazy）
+     └── TaskPanel.tsx           ← claude -p 异步任务 + SSE 流（lazy）
 ```
 
 ### 布局断点
@@ -158,6 +196,13 @@ Effect B [token, activeWindowIndex] — 管理 WebSocket（窗口切换时重建
 | Terminal.tsx | `/api/tasks` | 5s | runningTaskCount → 徽标 + 标题 |
 | TabBar.tsx（fallback） | `/api/sessions/:id/output` | 5s | 仅当 Terminal 未传入 windowOutputs 时 |
 | TaskPanel.tsx | `/api/tasks` | 5s | 任务历史列表 |
+
+### 国际化（i18n）
+
+- 使用 `i18next` + `react-i18next` + `i18next-browser-languagedetector`
+- 支持语言：中文（zh-CN）、英文（en）、日文（ja）、韩文（ko）、德文（de）、法文（fr）、西班牙文（es）、俄文（ru）
+- 翻译文件：`frontend/src/locales/<lang>/translation.json`
+- 入口：`frontend/src/i18n/index.ts`
 
 ---
 
