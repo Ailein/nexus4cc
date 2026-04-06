@@ -846,16 +846,25 @@ app.get('/api/projects', authMiddleware, (req, res) => {
 // GET /api/session-cwd — 获取指定 session 的 NEXUS_CWD
 app.get('/api/session-cwd', authMiddleware, (req, res) => {
   const session = req.query.session || TMUX_SESSION
+  let cwd = WORKSPACE_ROOT
+
+  // 1. 尝试读取 NEXUS_CWD（外部启动的 session 可能没有，会抛异常）
   try {
     const envOutput = execSync(`tmux show-environment -t ${session} NEXUS_CWD 2>/dev/null`).toString().trim()
     const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
-    const cwd = match ? match[1] : WORKSPACE_ROOT
-    // 返回相对于 WORKSPACE_ROOT 的路径
-    const relative = cwd.startsWith(WORKSPACE_ROOT) ? cwd.slice(WORKSPACE_ROOT.length).replace(/^\/+/, '') : ''
-    res.json({ cwd, relative })
-  } catch {
-    res.json({ cwd: WORKSPACE_ROOT, relative: '' })
+    if (match) cwd = match[1]
+  } catch { /* NEXUS_CWD 未设置 */ }
+
+  // 2. 若 NEXUS_CWD 未设置，回退到 pane_current_path
+  if (cwd === WORKSPACE_ROOT) {
+    try {
+      const panePath = execSync(`tmux display-message -t ${session} -p '#{pane_current_path}' 2>/dev/null`).toString().trim()
+      if (panePath) cwd = panePath
+    } catch { /* fallback to WORKSPACE_ROOT */ }
   }
+
+  const relative = cwd.startsWith(WORKSPACE_ROOT) ? cwd.slice(WORKSPACE_ROOT.length).replace(/^\/+/, '') : ''
+  res.json({ cwd, relative })
 })
 
 // GET /api/projects/:name/channels — 列出指定 Project 的 Channels（windows）
