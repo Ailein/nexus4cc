@@ -183,6 +183,22 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     }
   }
 
+  // 在本机 iTerm2 里用 tmux -CC 集成模式打开这个 project 对应的 tmux session
+  const handleLaunchInIterm = async (project: Project, e: React.PointerEvent | React.MouseEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    try {
+      const r = await fetch('/api/launch-iterm', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: project.name }),
+      })
+      if (!r.ok) setError(await parseApiError(r, '启动 iTerm 失败'))
+    } catch (err: unknown) {
+      setError(parseNetworkError(err))
+    }
+  }
+
   const doSwitchChannel = async (channel: Channel, shouldClose: boolean) => {
     try {
       const r = await fetch(`/api/sessions/${channel.index}/attach?session=${encodeURIComponent(currentProject)}`, {
@@ -447,6 +463,15 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                     )}
                   </div>
                   <span className="text-xs text-nexus-text-2 font-mono shrink-0">({project.channelCount})</span>
+                  <button
+                    className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md border-none bg-transparent text-nexus-text-2 opacity-70 hover:opacity-100 hover:bg-blue-500/20 hover:text-blue-400 active:scale-90 transition-all duration-150 cursor-pointer"
+                    onPointerDown={(e) => handleLaunchInIterm(project, e)}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onTouchEnd={(e) => e.stopPropagation()}
+                    title="在 iTerm 打开（tmux -CC 集成模式）"
+                  >
+                    <Icon name="play" size={14} />
+                  </button>
                   {!isSidebar && (
                     <button
                       className={menuButtonClass('modal')}
@@ -619,6 +644,15 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                     )}
                   </div>
                   <span className="text-xs text-nexus-text-2 font-mono shrink-0">({project.channelCount})</span>
+                  <button
+                    className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md border-none bg-transparent text-nexus-text-2 opacity-70 hover:opacity-100 hover:bg-blue-500/20 hover:text-blue-400 active:scale-90 transition-all duration-150 cursor-pointer"
+                    onPointerDown={(e) => handleLaunchInIterm(project, e)}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onTouchEnd={(e) => e.stopPropagation()}
+                    title="在 iTerm 打开（tmux -CC 集成模式）"
+                  >
+                    <Icon name="play" size={14} />
+                  </button>
                 </div>
               )
             })}

@@ -34,8 +34,9 @@ function useIsDesktop() {
 export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) {
   const { t } = useTranslation()
   const isDesktop = useIsDesktop()
-  const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
-  const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
+  // macOS 上默认 /workspace 不存在 —— 先用 localStorage 上次值占位，之后 effect 用后端 WORKSPACE_ROOT 兜底
+  const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '')
+  const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '')
   const [shellType, setShellType] = useState<'claude' | 'bash'>('claude')
   const [configs, setConfigs] = useState<Config[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
@@ -70,6 +71,18 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   useEffect(() => {
     fetchConfigs()
     browseDir(null)
+    // 如无 localStorage 记忆路径，拉取后端 WORKSPACE_ROOT 作为默认值
+    if (!localStorage.getItem('nexus_last_path')) {
+      fetch('/api/config', { headers })
+        .then(r => r.ok ? r.json() : null)
+        .then(cfg => {
+          if (cfg?.workspaceRoot) {
+            setSelectedPath(cfg.workspaceRoot)
+            setInputPath(cfg.workspaceRoot)
+          }
+        })
+        .catch(() => {})
+    }
   }, [])
 
   async function fetchConfigs() {
