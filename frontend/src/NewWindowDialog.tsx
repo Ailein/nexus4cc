@@ -18,15 +18,21 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
   const { t } = useTranslation()
   const [shellType, setShellType] = useState<'claude' | 'bash'>('claude')
   const [configs, setConfigs] = useState<Config[]>([])
-  const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
+  // 默认无 profile —— 不读 localStorage 预填，避免首次打开就自动选中之前的记忆值
+  // （handleProfileChange 仍写 localStorage，保留 future hint 能力但不作为 initial value）
+  const [selectedProfile, setSelectedProfile] = useState<string>('')
 
   useEffect(() => {
     fetch('/api/configs', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : [])
       .then((data: Config[]) => {
         setConfigs(data)
-        if (!localStorage.getItem('nexus_last_profile') && data.length > 0) {
-          setSelectedProfile(data[0].id)
+        // 不自动选第一个 profile —— 默认保持"无 profile"，由用户主动挑选
+        // 但如果 localStorage 里记忆的 profile 已经被删除，清掉以免显示幽灵选中
+        const saved = localStorage.getItem('nexus_last_profile')
+        if (saved && !data.some(c => c.id === saved)) {
+          setSelectedProfile('')
+          localStorage.removeItem('nexus_last_profile')
         }
       })
       .catch(() => {})
@@ -40,7 +46,9 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
 
   function handleProfileChange(id: string) {
     setSelectedProfile(id)
+    // 用户主动选"默认（无 profile）"时清掉 localStorage，下次打开不复现
     if (id) localStorage.setItem('nexus_last_profile', id)
+    else localStorage.removeItem('nexus_last_profile')
   }
 
   return (
