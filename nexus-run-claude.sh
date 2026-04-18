@@ -1,14 +1,16 @@
 #!/bin/bash
 # nexus-run-claude.sh — 以指定配置 profile 启动 claude
-# 用法: nexus-run-claude.sh <profile_id> <project_absolute_path>
+# 用法: nexus-run-claude.sh <profile_id> <project_absolute_path> [resume_session_id]
+#   resume_session_id: 可选；由 Nexus snapshot 恢复时传入，用 claude --resume 接续
 
 set -e
 
 PROFILE="$1"
 PROJECT="$2"
+RESUME_ID="${3:-}"
 
 if [ -z "$PROFILE" ] || [ -z "$PROJECT" ]; then
-    echo "[Nexus] Usage: nexus-run-claude.sh <profile> <project_path>"
+    echo "[Nexus] Usage: nexus-run-claude.sh <profile> <project_path> [resume_id]"
     exit 1
 fi
 
@@ -101,8 +103,18 @@ echo ""
 
 # ── 主循环：退出后提示续接 ──
 while true; do
-    # kimi 不支持 claude -c 的 conversation resume，直接启动（历史通过左侧 Sessions 面板访问）
-    claude --dangerously-skip-permissions || true
+    # Nexus snapshot 恢复：第一次循环时用 --resume 接续历史对话；若 --resume 失败则 fallback
+    # 到全新 claude 启动（保证窗口不空）。RESUME_ID 只用一次，避免 /exit 后循环再次挂同一 id
+    if [ -n "$RESUME_ID" ]; then
+        echo "[Nexus] Resuming claude session: $RESUME_ID"
+        claude --resume "$RESUME_ID" --dangerously-skip-permissions \
+            || claude --dangerously-skip-permissions \
+            || true
+        RESUME_ID=""
+    else
+        # kimi 不支持 claude -c 的 conversation resume，直接启动（历史通过左侧 Sessions 面板访问）
+        claude --dangerously-skip-permissions || true
+    fi
     echo ""
     echo "[Nexus] Claude exited.  r=restart  b=bash shell  q=quit window"
     read -r REPLY

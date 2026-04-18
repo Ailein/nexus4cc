@@ -10,6 +10,7 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import QuickSwitcher from './QuickSwitcher'
 
 // ANSI 256-color palette (0-15 standard, 16-231 6x6x6 cube, 232-255 grayscale)
 const ANSI256: string[] = (() => {
@@ -119,6 +120,48 @@ const MAX_UPLOAD_NOTIFICATIONS = 5
 
 export type ThemeMode = 'dark' | 'light'
 
+// —— IME/语音输入代理辅助函数 ——————————————————————————————
+// diffInput: 计算 prev → next 的增删，用于 onChange 增量发送到 PTY
+function diffInput(previous: string, next: string) {
+  let prefix = 0
+  while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix++
+  let suffix = 0
+  while (
+    suffix < previous.length - prefix &&
+    suffix < next.length - prefix &&
+    previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]
+  ) suffix++
+  return {
+    removed: previous.slice(prefix, previous.length - suffix),
+    added: next.slice(prefix, next.length - suffix),
+  }
+}
+
+// readCurrentTerminalInput: 从 xterm buffer 读取光标所在行（含 wrap 合并）的当前输入
+// 用于"反向同步"：PTY 输出后把终端当前行写回隐藏 input，保持两边 buffer 一致
+function readCurrentTerminalInput(term: XTerm | null): string {
+  const buffer = (term as any)?.buffer?.active
+  if (!buffer) return ''
+  let lineIndex = buffer.baseY + buffer.cursorY
+  if (lineIndex < 0) return ''
+  while (lineIndex > 0) {
+    const line = buffer.getLine(lineIndex)
+    if (!line?.isWrapped) break
+    lineIndex -= 1
+  }
+  const parts: string[] = []
+  for (let i = lineIndex; i < buffer.length; i++) {
+    const line = buffer.getLine(i)
+    if (!line) break
+    parts.push(line.translateToString(true))
+    const next = buffer.getLine(i + 1)
+    if (!next?.isWrapped) break
+  }
+  let text = parts.join('').replace(/\u00a0/g, ' ').trimEnd()
+  text = text.replace(/^[❯›>]\s*/, '')
+  return text
+}
+
 const DARK_THEME: ITheme = {
   background: '#0f172a',
   foreground: '#e2e8f0',
@@ -177,7 +220,7 @@ export const THEMES: Record<ThemeMode, ITheme> = {
 export function getInitialTheme(): ThemeMode {
   const saved = localStorage.getItem(THEME_KEY)
   if (saved === 'light' || saved === 'dark') return saved
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return 'dark'
 }
 
 // 主题色板 — 统一 Tailwind slate 色阶
@@ -284,6 +327,38 @@ export default function Terminal({ token }: Props) {
     channelCount: number
   }
   const [projects, setProjects] = useState<ProjectInfo[]>([])
+  // —— IME/语音输入代理：隐藏 input 代理 xterm 的 IME/语音/中文输入 ——
+  // 原因：xterm 自己的 textarea 对 iOS 语音听写、部分中文 IME、Android Gboard
+  // 行为不一致。用一个 fixed 定位、opacity 0.01 的原生 <input> 做代理，
+  // 通过 onChange + compositionStart/End diff 把字符发给 PTY，兼容性最好。
+  const [mobileInputVisible, setMobileInputVisible] = useState(false)
+  const [mobileInputValue, setMobileInputValue] = useState('')
+  const mobileInputRef = useRef<HTMLInputElement>(null)
+  const isComposingMobileRef = useRef(false)
+  const mobileInputPrevRef = useRef('')
+  const skipNextMobileChangeRef = useRef<string | null>(null)
+  const mobileInputPrimaryUntilRef = useRef(0)
+  // compositionEnd 后 iOS 会补发 onChange(value="")，冻结 150ms 吸收，避免误删听写文本
+  const postCompositionFreezeUntilRef = useRef(0)
+  // 语音听写结束时的空 onChange 与用户真实 Backspace 的区分窗口
+  const mobileDeleteIntentUntilRef = useRef(0)
+
+  const keepMobileInputPrimary = useCallback((ms = 8000) => {
+    mobileInputPrimaryUntilRef.current = Date.now() + ms
+  }, [])
+  const mobileSyncTimerRef = useRef<number | null>(null)
+
+  // 全局错误 toast —— 用于 createSession / createWindow / WS 切换失败时显示
+  const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const toastTimerRef = useRef<number | null>(null)
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg)
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 5000)
+  }, [])
+  // Session 切换 pending 追踪：WS onopen 清除，超时 toast 兜底
+  const pendingSwitchRef = useRef<{ session: string; startedAt: number } | null>(null)
+  const pendingSwitchTimerRef = useRef<number | null>(null)
 
 
   // 加载服务端默认 session
@@ -338,18 +413,6 @@ export default function Terminal({ token }: Props) {
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission().catch(() => {})
     }
-  }, [])
-
-  // 跟随系统深色/浅色模式切换（用户未手动设置时）
-  useEffect(() => {
-    const mq = window.matchMedia?.('(prefers-color-scheme: dark)')
-    if (!mq) return
-    const handler = (e: MediaQueryListEvent) => {
-      if (localStorage.getItem(THEME_KEY)) return // user has manual override
-      setThemeMode(e.matches ? 'dark' : 'light')
-    }
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
   }, [])
 
   // CSS vars 统一调用模块级函数，保证一致性
@@ -408,6 +471,32 @@ export default function Terminal({ token }: Props) {
       wsRef.current.send(data)
     }
   }, [])
+
+  // 从 xterm 当前行反向同步内容到隐藏 input，避免两边 buffer drift
+  // 仅在 mobile 且不处于 IME composition 时执行
+  const syncMobileInputFromTerminal = useCallback(() => {
+    if (window.innerWidth >= 768) return
+    if (isComposingMobileRef.current) return
+    const nextValue = readCurrentTerminalInput(termRef.current)
+    const currentValue = mobileInputPrevRef.current
+    const mobileOwnsInput = Date.now() < mobileInputPrimaryUntilRef.current
+    if (mobileOwnsInput && currentValue) {
+      if (!nextValue) return
+      if (nextValue !== currentValue && !nextValue.startsWith(currentValue)) return
+    }
+    mobileInputPrevRef.current = nextValue
+    setMobileInputValue(prev => (prev === nextValue ? prev : nextValue))
+  }, [])
+
+  // mobileInputVisible 变 true 时 focus 隐藏 input，触发系统键盘/语音按钮
+  useEffect(() => {
+    if (mobileInputVisible && mobileInputRef.current) {
+      syncMobileInputFromTerminal()
+      mobileInputRef.current.focus({ preventScroll: true })
+      const len = mobileInputRef.current.value.length
+      mobileInputRef.current.setSelectionRange(len, len)
+    }
+  }, [mobileInputVisible, syncMobileInputFromTerminal])
 
   useEffect(() => {
     applyTheme(themeMode)
@@ -658,13 +747,16 @@ export default function Terminal({ token }: Props) {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: relPath, shell_type: shellType, profile }),
       })
-      if (r.ok) {
-        const { name: newProjectName } = await r.json()
-        // 切换到新创建的 project
-        handleSwitchSession(newProjectName, 0)
+      if (!r.ok) {
+        let msg = `创建项目失败 (${r.status})`
+        try { const j = await r.json(); if (j?.error) msg = `创建项目失败：${j.error}` } catch {}
+        showToast(msg)
+        return
       }
-    } catch {
-      // ignore
+      const { name: newProjectName } = await r.json()
+      handleSwitchSession(newProjectName, 0)
+    } catch (e: unknown) {
+      showToast(`创建项目失败：${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -681,25 +773,33 @@ export default function Terminal({ token }: Props) {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ shell_type: shellType, profile, path: projectPath }),
       })
-      if (r.ok) {
-        const { name: newWindowName } = await r.json()
-        await new Promise(resolve => setTimeout(resolve, 300))
-        const sessionNow = activeTmuxSessionRef.current
-        const listRes = await fetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-        if (listRes.ok) {
-          const d = await listRes.json()
-          const wins: TmuxWindow[] = d.windows ?? []
-          setWindows(wins)
-          const newWin = wins.find(w => w.name === newWindowName)
-          if (newWin) {
-            attachToWindow(newWin.index)
-          }
-        }
+      if (!r.ok) {
+        let msg = `新建窗口失败 (${r.status})`
+        try { const j = await r.json(); if (j?.error) msg = `新建窗口失败：${j.error}` } catch {}
+        showToast(msg)
+        return
       }
-    } catch {
-      // ignore
+      const { name: newWindowName } = await r.json()
+      await new Promise(resolve => setTimeout(resolve, 300))
+      const sessionNow = activeTmuxSessionRef.current
+      const listRes = await fetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (listRes.ok) {
+        const d = await listRes.json()
+        const wins: TmuxWindow[] = d.windows ?? []
+        setWindows(wins)
+        const newWin = wins.find(w => w.name === newWindowName)
+        if (newWin) {
+          attachToWindow(newWin.index)
+        } else {
+          showToast(`新建窗口后未在列表中找到：${newWindowName}`)
+        }
+      } else {
+        showToast(`获取窗口列表失败 (${listRes.status})`)
+      }
+    } catch (e: unknown) {
+      showToast(`新建窗口失败：${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -742,8 +842,16 @@ export default function Terminal({ token }: Props) {
     windowsInitializedRef.current = false
     windowsLoadedRef.current = false
     setWindowsLoaded(false)
-    // 重新获取窗口列表
-    setTimeout(() => fetchWindows(), 100)
+    // 切换完成信号改由 WS onopen 驱动（见 createWs.onopen）
+    // 5 秒兜底：若未 open → toast 提示（不阻塞其他操作）
+    pendingSwitchRef.current = { session: newSession, startedAt: Date.now() }
+    if (pendingSwitchTimerRef.current) window.clearTimeout(pendingSwitchTimerRef.current)
+    pendingSwitchTimerRef.current = window.setTimeout(() => {
+      if (pendingSwitchRef.current?.session === newSession) {
+        showToast(`切换到 "${newSession}" 超时：WebSocket 未连接，请检查服务状态`)
+        pendingSwitchRef.current = null
+      }
+    }, 5000)
   }
 
   function handleFileUpload() {
@@ -1147,20 +1255,27 @@ export default function Terminal({ token }: Props) {
         // Tap toggles keyboard: tap to show, tap again to hide
         if (keyboardVisibleRef.current) {
           keyboardVisibleRef.current = false
+          if (mobileInputRef.current) mobileInputRef.current.blur()
           if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
           if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
         } else {
           keyboardVisibleRef.current = true
+          // 按平台分支：iOS 走隐藏 input 代理（支持语音听写/拼音候选），其他
+          // 平台（Android + PC）走 xterm 原生 textarea（对 Gboard / 豆包语音 /
+          // 讯飞 / 第三方 IME 兼容性最好 —— 它们对"看不见的 input"注入行为不一致）
+          const isPC = window.innerWidth >= 768
           const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
-          if (isIOS) {
-            // iOS Safari won't reliably show the keyboard for xterm's internal
-            // textarea (tiny element + restrictive attributes). Use our standard
-            // <input> instead — iOS handles it correctly.
+          const useProxyInput = !isPC && isIOS
+          if (useProxyInput) {
             if (xtermTa) xtermTa.inputMode = 'none'
-            if (inputRef.current) { inputRef.current.inputMode = 'text'; inputRef.current.focus() }
+            if (inputRef.current) inputRef.current.inputMode = 'none'
+            if (mobileInputRef.current) {
+              mobileInputRef.current.focus({ preventScroll: true })
+              syncMobileInputFromTerminal()
+            }
           } else {
-            // Android / other: focus xterm's own textarea — term.onData handles
-            // all input natively (letters, numbers, IME/CJK).
+            // PC + Android：焦点给 xterm 原生 textarea，term.onData 直接捕获
+            if (mobileInputRef.current) mobileInputRef.current.blur()
             if (xtermTa) { xtermTa.inputMode = 'text'; xtermTa.focus() }
             if (inputRef.current) inputRef.current.inputMode = 'text'
           }
@@ -1294,6 +1409,19 @@ export default function Terminal({ token }: Props) {
           // SIGWINCH-triggered repaint is parsed from a clean state.
           termRef.current?.reset()
         }
+        // Session 切换完成信号：WS 到位后拉取新 session 的 windows 列表
+        // 并清除超时兜底定时器；fetchWindows 内部用 activeTmuxSessionRef.current
+        if (pendingSwitchRef.current) {
+          const pending = pendingSwitchRef.current
+          pendingSwitchRef.current = null
+          if (pendingSwitchTimerRef.current) {
+            window.clearTimeout(pendingSwitchTimerRef.current)
+            pendingSwitchTimerRef.current = null
+          }
+          if (activeTmuxSessionRef.current === pending.session) {
+            fetchWindows()
+          }
+        }
         reconnectAttempts = 0
         hasConnectedRef.current = true
         setIsConnecting(false)
@@ -1320,6 +1448,11 @@ export default function Terminal({ token }: Props) {
       newWs.onmessage = (e) => {
         writeTerm(e.data)
         if (!userScrolledRef.current) termRef.current?.scrollToBottom()
+        // 批处理同步到 IME 代理 input（debounce 50ms，避免每帧同步）
+        if (mobileSyncTimerRef.current) window.clearTimeout(mobileSyncTimerRef.current)
+        mobileSyncTimerRef.current = window.setTimeout(() => {
+          syncMobileInputFromTerminal()
+        }, 50)
       }
 
       newWs.onclose = (e) => {
@@ -1351,6 +1484,98 @@ export default function Terminal({ token }: Props) {
   }, [token, activeWindowIndex, wsSessionKey])
 
   const isComposingRef = useRef(false)
+
+  // —— IME 代理：onChange 增量发送 ——
+  function handleMobileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const newVal = e.target.value
+    // compositionEnd 已显式处理过同值，再触发的 onChange 跳过一次
+    if (skipNextMobileChangeRef.current === newVal) {
+      skipNextMobileChangeRef.current = null
+      mobileInputPrevRef.current = newVal
+      setMobileInputValue(newVal)
+      return
+    }
+    // 输入法候选栏期间只更新本地显示，不写 PTY
+    if (isComposingMobileRef.current) {
+      keepMobileInputPrimary()
+      mobileInputPrevRef.current = newVal
+      setMobileInputValue(newVal)
+      return
+    }
+    const prev = mobileInputPrevRef.current
+    const { removed, added } = diffInput(prev, newVal)
+    keepMobileInputPrimary()
+    // compositionEnd 后冻结窗口内的缩短 → 吞掉（iOS 的补发清空）
+    if (removed && Date.now() < postCompositionFreezeUntilRef.current) {
+      setMobileInputValue(prev)
+      if (mobileInputRef.current && mobileInputRef.current.value !== prev) {
+        mobileInputRef.current.value = prev
+      }
+      return
+    }
+    // 语音听写结束会单独 onChange("") —— 没有之前的 Backspace keydown，
+    // 且在 mobileInputPrimaryUntilRef 窗口内，判为 IME 清空，忽略
+    const looksLikeImeShrinkCleanup =
+      removed.length > 0 &&
+      added.length === 0 &&
+      Date.now() >= mobileDeleteIntentUntilRef.current &&
+      Date.now() < mobileInputPrimaryUntilRef.current
+    if (looksLikeImeShrinkCleanup) {
+      setMobileInputValue(prev)
+      if (mobileInputRef.current && mobileInputRef.current.value !== prev) {
+        mobileInputRef.current.value = prev
+      }
+      return
+    }
+    if (removed) sendToWs('\x7f'.repeat(removed.length))
+    if (added) sendToWs(added)
+    mobileInputPrevRef.current = newVal
+    setMobileInputValue(newVal)
+  }
+
+  function handleMobileKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (isComposingMobileRef.current) return
+    keepMobileInputPrimary()
+    if (e.key === 'Backspace') {
+      mobileDeleteIntentUntilRef.current = Date.now() + 300
+      // 代理 input 已空时仍要把 \x7f 送到终端（slash-menu 自动补全后两边会不同步）
+      if (mobileInputPrevRef.current.length === 0) {
+        e.preventDefault()
+        sendToWs('\x7f')
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      sendToWs('\r')
+      setMobileInputValue('')
+      mobileInputPrevRef.current = ''
+    } else if (e.key === 'Tab') {
+      e.preventDefault()
+      sendToWs('\t')
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      sendToWs('\x1b')
+    } else if (e.ctrlKey && e.key.length === 1) {
+      e.preventDefault()
+      sendToWs(String.fromCharCode(e.key.toLowerCase().charCodeAt(0) - 96))
+    }
+    // 可打印字符：浏览器写入 input.value，由 onChange 发 delta
+  }
+
+  function handleMobileCompositionEnd(e: React.CompositionEvent<HTMLInputElement>) {
+    isComposingMobileRef.current = false
+    keepMobileInputPrimary()
+    postCompositionFreezeUntilRef.current = Date.now() + 150
+    const nextValue = e.currentTarget.value
+    skipNextMobileChangeRef.current = nextValue
+    const prev = mobileInputPrevRef.current
+    const { removed, added } = diffInput(prev, nextValue)
+    if (removed) sendToWs('\x7f'.repeat(removed.length))
+    if (added) sendToWs(added)
+    setMobileInputValue(nextValue)
+    mobileInputPrevRef.current = nextValue
+    const inp = e.currentTarget as HTMLInputElement
+    if (inp.value !== nextValue) inp.value = nextValue
+  }
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (isComposingRef.current) return // handled by compositionEnd
@@ -1543,6 +1768,15 @@ export default function Terminal({ token }: Props) {
 
   return (
     <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
+      {toastMsg && (
+        <div
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[500] max-w-[min(90vw,520px)] bg-nexus-error/95 text-white text-sm px-4 py-2.5 rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.35)] cursor-pointer select-none"
+          onPointerDown={() => setToastMsg(null)}
+          title="点击关闭"
+        >
+          {toastMsg}
+        </div>
+      )}
       <input
         ref={inputRef}
         className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
@@ -1556,11 +1790,20 @@ export default function Terminal({ token }: Props) {
         onCompositionEnd={handleCompositionEnd}
         aria-hidden="true"
       />
+      {/* iOS 相册/文件选择器有两条硬规则：
+           1) input 必须是"视觉上真实存在"的元素（不能 display:none / 0 尺寸 /
+              pointer-events:none，否则系统认为它不是 interactive，.click() 静默失败）
+           2) .click() 必须在用户手势同步栈里调用（已满足：onClick 里直接调）
+           方案：opacity 0.01 保持不可见，但尺寸放大、保留 pointer-events。
+           再叠加 left:-9999px 把它挪出屏幕外防止意外点击/视觉闪动，对
+           iOS 来说这仍视为有效元素。 */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*,video/*"
-        className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
+        multiple={false}
+        className="fixed top-0 opacity-[0.01]"
+        style={{ left: '-9999px', width: '44px', height: '44px', fontSize: '16px' }}
         onChange={(e) => {
           const file = e.target.files?.[0]
           if (file) uploadFile(file)
@@ -1571,7 +1814,8 @@ export default function Terminal({ token }: Props) {
       <input
         ref={pasteFileRef}
         type="file"
-        className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
+        className="fixed top-0 opacity-[0.01]"
+        style={{ left: '-9999px', width: '44px', height: '44px', fontSize: '16px' }}
         onChange={(e) => {
           const file = e.target.files?.[0]
           if (file) uploadFile(file)
@@ -1758,6 +2002,46 @@ export default function Terminal({ token }: Props) {
             )}
           </div>
           <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={toolbarHeightRef.current} />
+          <QuickSwitcher
+            windows={windows}
+            activeIndex={activeWindowIndex}
+            windowOutputs={windowOutputs}
+            onSwitch={(idx) => attachToWindow(idx)}
+          />
+          {/* 移动端隐藏 IME/语音输入代理。position:fixed + opacity:0.01，
+              iOS 会把它当成真实可见 input（关键点：别用 overflow:hidden 或 width:1px，
+              那样 iOS 认为元素不可见，语音听写按钮会禁用）。font-size 16px 防 iOS 页面 zoom。 */}
+          <input
+            ref={mobileInputRef}
+            value={mobileInputValue}
+            style={{
+              position: 'fixed',
+              bottom: (toolbarHeightRef.current || 0) + 4,
+              left: 0,
+              width: '100%',
+              height: '44px',
+              opacity: 0.01,
+              zIndex: 200,
+              fontSize: '16px',
+              border: 'none',
+              outline: 'none',
+              background: 'transparent',
+              color: 'transparent',
+              caretColor: 'transparent',
+            }}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            onChange={handleMobileChange}
+            onKeyDown={handleMobileKeyDown}
+            onCompositionStart={() => { isComposingMobileRef.current = true }}
+            onCompositionEnd={handleMobileCompositionEnd}
+            onFocus={() => { setMobileInputVisible(true); syncMobileInputFromTerminal() }}
+            onBlur={() => { setMobileInputVisible(false) }}
+            tabIndex={-1}
+            aria-label="终端输入代理（支持语音/输入法）"
+          />
           <div ref={toolbarWrapRef}><Toolbar {...toolbarProps} /></div>
         </div>
       )}

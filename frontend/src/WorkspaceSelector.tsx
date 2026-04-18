@@ -34,11 +34,13 @@ function useIsDesktop() {
 export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) {
   const { t } = useTranslation()
   const isDesktop = useIsDesktop()
-  const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
-  const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
+  // macOS 上默认 /workspace 不存在 —— 先用 localStorage 上次值占位，之后 effect 用后端 WORKSPACE_ROOT 兜底
+  const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '')
+  const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '')
   const [shellType, setShellType] = useState<'claude' | 'bash'>('claude')
   const [configs, setConfigs] = useState<Config[]>([])
-  const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
+  // 默认无 profile —— 不读 localStorage 预填，让每次打开对话框都是"默认（不使用 profile）"
+  const [selectedProfile, setSelectedProfile] = useState<string>('')
 
   // 文件浏览器状态
   const [browsePath, setBrowsePath] = useState<string | null>(null)
@@ -70,6 +72,18 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   useEffect(() => {
     fetchConfigs()
     browseDir(null)
+    // 如无 localStorage 记忆路径，拉取后端 WORKSPACE_ROOT 作为默认值
+    if (!localStorage.getItem('nexus_last_path')) {
+      fetch('/api/config', { headers })
+        .then(r => r.ok ? r.json() : null)
+        .then(cfg => {
+          if (cfg?.workspaceRoot) {
+            setSelectedPath(cfg.workspaceRoot)
+            setInputPath(cfg.workspaceRoot)
+          }
+        })
+        .catch(() => {})
+    }
   }, [])
 
   async function fetchConfigs() {
@@ -78,8 +92,10 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
       if (r.ok) {
         const data = await r.json()
         setConfigs(data)
-        if (!localStorage.getItem('nexus_last_profile') && data.length > 0) {
-          setSelectedProfile(data[0].id)
+        // 不自动选第一个 profile；但如果 localStorage 里的旧 profile 已经被删，清掉防幽灵
+        const saved = localStorage.getItem('nexus_last_profile')
+        if (saved && !data.some((c: Config) => c.id === saved)) {
+          localStorage.removeItem('nexus_last_profile')
         }
       }
     } catch {
@@ -100,6 +116,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   function handleProfileChange(id: string) {
     setSelectedProfile(id)
     if (id) localStorage.setItem('nexus_last_profile', id)
+    else localStorage.removeItem('nexus_last_profile')
   }
 
   function handleConfirm() {

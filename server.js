@@ -35,6 +35,7 @@ const DATA_DIR = join(__dirname, 'data');
 const TOOLBAR_CONFIG_FILE = join(DATA_DIR, 'toolbar-config.json');
 const CONFIGS_DIR = join(DATA_DIR, 'configs');
 const TASKS_FILE = join(DATA_DIR, 'tasks.json');
+const SNAPSHOT_FILE = join(DATA_DIR, 'sessions-snapshot.json');
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
 
@@ -859,11 +860,17 @@ app.post('/api/sessions/:id/rename', authMiddleware, (req, res) => {
   const session = req.query.session || TMUX_SESSION
   const { name } = req.body || {}
   if (!name) return res.status(400).json({ error: 'name required' })
-  const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '-').substring(0, 50)
-  exec(`tmux rename-window -t ${session}:${index} "${safeName}"`, (err) => {
-    if (err) return res.status(500).json({ error: err.message })
+  // window 名允许 Unicode（中日韩等），仅过滤控制字符和 tmux target separator ':'
+  // 之前的 /[^a-zA-Z0-9._-]/→'-' 会把中文全部变成 '-'，导致"我的频道" → "----"
+  const safeName = String(name).replace(/[\r\n\t\0:]/g, '').trim().slice(0, 50)
+  if (!safeName) return res.status(400).json({ error: 'name required' })
+  try {
+    execFileSync('tmux', ['rename-window', '-t', `${session}:${index}`, '--', safeName], { stdio: 'pipe' })
+    try { renameWindowInSnapshot(session, index, safeName) } catch {}
     res.json({ ok: true, name: safeName })
-  })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 // GET /api/sessions/:id/output — 获取窗口最后输出（F-15 状态卡片）
@@ -963,6 +970,16 @@ app.get('/api/config', authMiddleware, (req, res) => {
 })
 
 // GET /api/tmux-sessions — 列出所有 tmux session（F-18）
+// GET /api/snapshot/status — 最近一次启动恢复的摘要（前端显示 toast）
+app.get('/api/snapshot/status', authMiddleware, (req, res) => {
+  const snap = loadSnapshot()
+  res.json({
+    lastRestore: lastRestoreSummary,
+    totalSessions: snap.sessions.length,
+    savedAt: snap.savedAt || null,
+  })
+})
+
 app.get('/api/tmux-sessions', authMiddleware, (req, res) => {
   exec('tmux list-sessions -F "#{session_name}|#{session_windows}|#{session_attached}"', (err, stdout) => {
     if (err) return res.json([{ name: TMUX_SESSION, windows: 0, attached: false }])
@@ -972,6 +989,48 @@ app.get('/api/tmux-sessions', authMiddleware, (req, res) => {
     })
     res.json(sessions)
   })
+})
+
+// POST /api/launch-iterm — 在本机启动 iTerm2 并用 tmux -CC 集成模式接管指定 session
+// 仅在 server 与 iTerm2 同机时有意义（macOS only）。
+app.post('/api/launch-iterm', authMiddleware, (req, res) => {
+  if (process.platform !== 'darwin') {
+    return res.status(400).json({ error: 'launch-iterm requires macOS host' })
+  }
+  const session = req.body?.session
+  if (!session || typeof session !== 'string') {
+    return res.status(400).json({ error: 'session required' })
+  }
+  if (/["'\\`$]/.test(session)) {
+    return res.status(400).json({ error: 'invalid session name' })
+  }
+  try {
+    execSync(`tmux has-session -t '${session}' 2>/dev/null`)
+  } catch {
+    return res.status(404).json({ error: 'session not found' })
+  }
+  const appleScript = `on run argv
+  set sess to item 1 of argv
+  tell application "iTerm2"
+    activate
+    set newWin to (create window with default profile)
+    tell current session of newWin
+      write text "tmux -CC attach -t \\"" & sess & "\\""
+    end tell
+  end tell
+end run`
+  try {
+    const proc = spawn('osascript', ['-', session], {
+      detached: true,
+      stdio: ['pipe', 'ignore', 'ignore'],
+    })
+    proc.stdin.write(appleScript)
+    proc.stdin.end()
+    proc.unref()
+    return res.json({ ok: true, session })
+  } catch (e) {
+    return res.status(500).json({ error: String(e) })
+  }
 })
 
 // ========== F-20: Project-Channel API ==========
@@ -1065,6 +1124,16 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   if (!path) return res.status(400).json({ error: 'path required' })
 
   const cwd = path.startsWith('/') ? path : `${WORKSPACE_ROOT}/${path}`
+  if (!existsSync(cwd)) {
+    return res.status(400).json({ error: `工作目录不存在：${cwd}` })
+  }
+  try {
+    if (!statSync(cwd).isDirectory()) {
+      return res.status(400).json({ error: `不是目录：${cwd}` })
+    }
+  } catch (e) {
+    return res.status(400).json({ error: `无法访问：${cwd}（${e.message}）` })
+  }
 
   // project 名称基于路径：把 / 替换成 -，并去除首尾 -
   let projectName = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-')
@@ -1100,9 +1169,11 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   } else {
     if (profile) {
       const runScript = join(__dirname, 'nexus-run-claude.sh')
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`
+      // claude 失败时给出提示，再 fallback 到交互 shell，避免窗口看起来"没反应"
+      // 注意：提示文本里不能有 `"`；用单引号避免与 execFileSync 的参数边界冲突
+      shellCmd = `${proxyPrefix}bash '${runScript}' ${profile} '${cwd}' || echo; echo '[Nexus] claude 退出或启动失败，fallback 到 ${INTERACTIVE_SHELL}（可直接输入 claude 重试）'; ${INTERACTIVE_SHELL_CMD}`
     } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`
+      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions || echo; echo '[Nexus] claude 退出或启动失败，请确认已 claude login 或配置 API key'; ${INTERACTIVE_SHELL_CMD}`
     }
   }
 
@@ -1110,18 +1181,45 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   const dirName = cwd.replace(/^\/+|\/+$/g, '').split('/').pop() || '~'
   const initialWindowName = profile ? `${dirName}-${profile}` : dirName
 
-  // 创建 tmux session（如果不存在）
+  // 创建 tmux session（改用 execFileSync，避免 shellCmd 含引号时 shell 参数解析错位
+  // 导致 tmux 收到截断的命令，window 瞬间退出 → session 消亡 → 后续 set-environment
+  // 报 "no such session"）
+  // 同时把 NEXUS_CWD 和 proxy vars 通过 `-e KEY=VAL` 在 new-session 时一次性注入，
+  // 避免 session 存活不稳时后置 set-environment 失败
+  const newSessionArgs = [
+    'new-session', '-d',
+    '-s', finalName,
+    '-n', initialWindowName,
+    '-c', cwd,
+    '-e', `NEXUS_CWD=${cwd}`,
+  ]
+  for (const [key, value] of Object.entries(proxyVars)) {
+    newSessionArgs.push('-e', `${key}=${value}`)
+  }
+  newSessionArgs.push(shellCmd)
   try {
-    execSync(`tmux new-session -d -s ${finalName} -n "${initialWindowName}" -c "${cwd}" "${shellCmd}"`)
-    // 设置 NEXUS_CWD
-    execSync(`tmux set-environment -t ${finalName} NEXUS_CWD "${cwd}"`)
-    // 设置代理变量
-    for (const [key, value] of Object.entries(proxyVars)) {
-      try { execSync(`tmux set-environment -t ${finalName} ${key} "${value}" 2>/dev/null`) } catch {}
-    }
+    execFileSync('tmux', newSessionArgs, { stdio: 'pipe' })
   } catch (err) {
     return res.status(500).json({ error: 'failed to create project: ' + err.message })
   }
+
+  // 写入 snapshot（电脑重启后自动恢复此 project 骨架）
+  try {
+    upsertSessionToSnapshot({
+      name: finalName,
+      cwd,
+      shell_type,
+      profile: profile || null,
+      windows: [{
+        index: 0,
+        name: initialWindowName,
+        cwd,
+        shell_type,
+        profile: profile || null,
+        claudeSessionId: null, // 等下次 reconcile 异步抓
+      }],
+    })
+  } catch (e) { console.warn('[Snapshot] upsert session failed:', e.message) }
 
   res.json({ name: finalName, path: cwd, shell_type, profile: profile || null })
 })
@@ -1141,6 +1239,9 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
       const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
       if (match) cwd = match[1]
     } catch {}
+  }
+  if (!existsSync(cwd)) {
+    return res.status(400).json({ error: `工作目录不存在：${cwd}` })
   }
 
   // Channel 命名：profile 名[-序号]
@@ -1172,23 +1273,49 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
   } else {
     if (profile) {
       const runScript = join(__dirname, 'nexus-run-claude.sh')
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`
+      shellCmd = `${proxyPrefix}bash '${runScript}' ${profile} '${cwd}' || echo; echo '[Nexus] claude 退出或启动失败，fallback 到 ${INTERACTIVE_SHELL}（可直接输入 claude 重试）'; ${INTERACTIVE_SHELL_CMD}`
     } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`
+      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions || echo; echo '[Nexus] claude 退出或启动失败，请确认已 claude login 或配置 API key'; ${INTERACTIVE_SHELL_CMD}`
     }
   }
 
   // 确保 session 存在
   try {
-    execSync(`tmux has-session -t ${sessionName} 2>/dev/null || tmux new-session -d -s ${sessionName} -n shell "${INTERACTIVE_SHELL}"`)
-  } catch {}
+    execFileSync('tmux', ['has-session', '-t', sessionName], { stdio: 'pipe' })
+  } catch {
+    try {
+      execFileSync('tmux', ['new-session', '-d', '-s', sessionName, '-n', 'shell', INTERACTIVE_SHELL], { stdio: 'pipe' })
+    } catch {}
+  }
 
-  // 创建新 window
-  const cmd = `tmux new-window -t ${sessionName} -c "${cwd}" -n "${channelName}" "${shellCmd}"`
-  exec(cmd, (err) => {
-    if (err) return res.status(500).json({ error: err.message })
+  // 创建新 window —— 改 execFileSync 避免 shellCmd 引号嵌套问题
+  try {
+    execFileSync('tmux', [
+      'new-window',
+      '-t', sessionName,
+      '-c', cwd,
+      '-n', channelName,
+      shellCmd,
+    ], { stdio: 'pipe' })
+    // 写入 snapshot：查新 window 的 index
+    try {
+      const wins = readTmuxWindows(sessionName)
+      const newWin = wins.find(w => w.name === channelName)
+      if (newWin) {
+        upsertWindowToSnapshot(sessionName, {
+          index: newWin.index,
+          name: channelName,
+          cwd,
+          shell_type,
+          profile: profile || null,
+          claudeSessionId: null,
+        })
+      }
+    } catch (e) { console.warn('[Snapshot] upsert window failed:', e.message) }
     res.json({ name: channelName, cwd, shell_type, profile: profile || null, project: sessionName })
-  })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 // POST /api/projects/:name/activate — 切换到指定 Project（设置为目标 session）
@@ -1229,7 +1356,9 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
   if (!newName || !newName.trim()) {
     return res.status(400).json({ error: 'new name required' })
   }
-  const sanitizedNewName = newName.trim().replace(/[^a-zA-Z0-9_\-]/g, '')
+  // session 名允许 Unicode，但不能含 tmux 保留字符（`:` `.`）、空白、路径分隔符、控制字符
+  // —— 之前的 /[^a-zA-Z0-9_\-]/→'' 把中文字符直接删掉，中文名会变空导致 invalid name
+  const sanitizedNewName = String(newName).trim().replace(/[\s:.\0\r\n\t\/\\]/g, '').slice(0, 50)
   if (!sanitizedNewName) {
     return res.status(400).json({ error: 'invalid name format' })
   }
@@ -1247,10 +1376,13 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
     // 不存在，可以重命名
   }
   // 执行重命名
-  exec(`tmux rename-session -t ${oldName} ${sanitizedNewName}`, (err) => {
-    if (err) return res.status(500).json({ error: err.message })
+  try {
+    execFileSync('tmux', ['rename-session', '-t', oldName, '--', sanitizedNewName], { stdio: 'pipe' })
+    try { renameSessionInSnapshot(oldName, sanitizedNewName) } catch {}
     res.json({ ok: true, oldName, newName: sanitizedNewName })
-  })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 // DELETE /api/projects/:name — 关闭 Project（kill tmux session）
@@ -1265,6 +1397,7 @@ app.delete('/api/projects/:name', authMiddleware, (req, res) => {
   // kill session
   exec(`tmux kill-session -t ${sessionName}`, (err) => {
     if (err) return res.status(500).json({ error: err.message })
+    try { removeSessionFromSnapshot(sessionName) } catch {}
     res.json({ ok: true })
   })
 })
@@ -1300,12 +1433,14 @@ app.delete('/api/sessions/:id', authMiddleware, (req, res) => {
       exec(`tmux new-window -t ${session} -n shell "${INTERACTIVE_SHELL}"`, () => {
         exec(`tmux kill-window -t ${session}:${index}`, (err) => {
           if (err) return res.status(500).json({ error: err.message })
+          try { removeWindowFromSnapshot(session, index) } catch {}
           res.json({ ok: true })
         })
       })
     } else {
       exec(`tmux kill-window -t ${session}:${index}`, (err) => {
         if (err) return res.status(500).json({ error: err.message })
+        try { removeWindowFromSnapshot(session, index) } catch {}
         res.json({ ok: true })
       })
     }
@@ -1760,6 +1895,265 @@ app.get('*', (req, res) => {
   });
 });
 
+// ========== Session Snapshot 持久化（电脑重启后自动恢复 project/channel 骨架）==========
+// 存储 schema v1：
+//   { version:1, savedAt, sessions:[{ name, cwd, shell_type, profile,
+//       windows:[{ index, name, cwd, shell_type, profile, claudeSessionId? }] }] }
+// claudeSessionId 只对 shell_type=claude 的 window 有意义，Phase 2 赋值。
+//
+// 更新时机（权威源）：/api/projects POST/DELETE/rename、/channels POST/DELETE/rename。
+// 定期 reconcile：每 60s 扫 tmux 剔除已删除 session，刷新 claude session-id。
+// 启动恢复：server.listen 后 restoreFromSnapshot() 对 has-session 检查不存在的按 spec 重建。
+
+function loadSnapshot() {
+  try {
+    if (!existsSync(SNAPSHOT_FILE)) return { version: 1, sessions: [] };
+    const raw = JSON.parse(readFileSync(SNAPSHOT_FILE, 'utf8'));
+    if (!raw || !Array.isArray(raw.sessions)) return { version: 1, sessions: [] };
+    return raw;
+  } catch (e) {
+    console.warn('[Snapshot] load failed:', e.message);
+    return { version: 1, sessions: [] };
+  }
+}
+
+function writeSnapshot(snap) {
+  try {
+    const next = { version: 1, savedAt: new Date().toISOString(), sessions: snap.sessions || [] };
+    writeFileSync(SNAPSHOT_FILE, JSON.stringify(next, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[Snapshot] write failed:', e.message);
+  }
+}
+
+// 从 claude CLI 存储推断指定 cwd 当前活跃的 session-id
+//   ~/.claude/projects/<cwd.replace(/[^a-zA-Z0-9]/g,'-')>/<uuid>.jsonl
+// mtime 最新的 jsonl = 最近使用的 session
+function inferClaudeSessionId(cwd) {
+  if (!cwd) return null;
+  try {
+    const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+    const dir = join(process.env.HOME || '', '.claude', 'projects', encoded);
+    if (!existsSync(dir)) return null;
+    const files = readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    if (!files.length) return null;
+    files.sort((a, b) => {
+      try { return statSync(join(dir, b)).mtimeMs - statSync(join(dir, a)).mtimeMs; }
+      catch { return 0; }
+    });
+    return files[0].replace(/\.jsonl$/, '');
+  } catch { return null; }
+}
+
+// 从 live tmux 读取指定 session 的 windows 列表（index + name + pane-cwd）
+function readTmuxWindows(sessionName) {
+  try {
+    const out = execFileSync('tmux', [
+      'list-windows', '-t', sessionName,
+      '-F', '#{window_index}\t#{window_name}\t#{pane_current_path}'
+    ], { encoding: 'utf8', stdio: 'pipe' }).trim();
+    return out.split('\n').filter(Boolean).map(line => {
+      const [idxStr, name, paneCwd] = line.split('\t');
+      return { index: Number(idxStr), name, cwd: paneCwd || null };
+    });
+  } catch { return []; }
+}
+
+// 合并：以 snapshot 为主干（保留 shell_type/profile/claudeSessionId），
+// 用 live tmux 校正 window 列表（新增/消失），并刷新 claudeSessionId
+function reconcileSnapshot() {
+  const snap = loadSnapshot();
+  let aliveSessions;
+  try {
+    aliveSessions = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
+      encoding: 'utf8', stdio: 'pipe'
+    }).trim().split('\n').filter(Boolean);
+  } catch {
+    aliveSessions = [];
+  }
+  const aliveSet = new Set(aliveSessions);
+  const next = [];
+  for (const sess of snap.sessions) {
+    if (!aliveSet.has(sess.name)) {
+      // tmux 已经没这个 session —— 保留 spec 以便下次恢复时重建（先生的需求）
+      // 这里的判断：如果 tmux server 整体挂了（aliveSessions 空），所有 spec 都保留；
+      // 如果 server 活着但特定 session 没了（用户主动 kill），也保留（下次 Nexus 启动自动补）
+      next.push(sess);
+      continue;
+    }
+    const liveWins = readTmuxWindows(sess.name);
+    const liveIndices = new Set(liveWins.map(w => w.index));
+    // 合并 windows：优先保留 snapshot 里的元数据，补上新出现的（shell_type 默认 bash）
+    const mergedWins = [];
+    const snapByIdx = new Map((sess.windows || []).map(w => [w.index, w]));
+    for (const lw of liveWins) {
+      const prev = snapByIdx.get(lw.index);
+      const shellType = prev?.shell_type ?? 'bash';
+      const winCwd = lw.cwd || prev?.cwd || sess.cwd;
+      const merged = {
+        index: lw.index,
+        name: lw.name,
+        cwd: winCwd,
+        shell_type: shellType,
+        profile: prev?.profile ?? null,
+      };
+      if (shellType === 'claude') {
+        const id = inferClaudeSessionId(winCwd);
+        merged.claudeSessionId = id || prev?.claudeSessionId || null;
+      }
+      mergedWins.push(merged);
+    }
+    // 只保留 tmux 里还存在的 window（被删掉的不再保留）
+    next.push({
+      name: sess.name,
+      cwd: sess.cwd,
+      shell_type: sess.shell_type,
+      profile: sess.profile,
+      windows: mergedWins.filter(w => liveIndices.has(w.index)),
+    });
+  }
+  writeSnapshot({ sessions: next });
+}
+
+// 把单个 session 的 spec 加入 snapshot（API 调用后）；存在则覆盖
+function upsertSessionToSnapshot(sess) {
+  const snap = loadSnapshot();
+  const others = snap.sessions.filter(s => s.name !== sess.name);
+  others.push(sess);
+  writeSnapshot({ sessions: others });
+}
+
+function upsertWindowToSnapshot(sessionName, win) {
+  const snap = loadSnapshot();
+  const target = snap.sessions.find(s => s.name === sessionName);
+  if (!target) return;
+  target.windows = (target.windows || []).filter(w => w.index !== win.index);
+  target.windows.push(win);
+  writeSnapshot({ sessions: snap.sessions });
+}
+
+function removeSessionFromSnapshot(sessionName) {
+  const snap = loadSnapshot();
+  writeSnapshot({ sessions: snap.sessions.filter(s => s.name !== sessionName) });
+}
+
+function removeWindowFromSnapshot(sessionName, windowIndex) {
+  const snap = loadSnapshot();
+  const target = snap.sessions.find(s => s.name === sessionName);
+  if (!target) return;
+  target.windows = (target.windows || []).filter(w => Number(w.index) !== Number(windowIndex));
+  writeSnapshot({ sessions: snap.sessions });
+}
+
+function renameSessionInSnapshot(oldName, newName) {
+  const snap = loadSnapshot();
+  const target = snap.sessions.find(s => s.name === oldName);
+  if (!target) return;
+  target.name = newName;
+  writeSnapshot({ sessions: snap.sessions });
+}
+
+function renameWindowInSnapshot(sessionName, index, newName) {
+  const snap = loadSnapshot();
+  const target = snap.sessions.find(s => s.name === sessionName);
+  if (!target) return;
+  const w = (target.windows || []).find(x => Number(x.index) === Number(index));
+  if (w) w.name = newName;
+  writeSnapshot({ sessions: snap.sessions });
+}
+
+// 构造和路由 /api/projects 里一致的 shellCmd（Phase 2 也用）
+// 这里要复用正是因为重启恢复时要模拟"当时创建"的命令
+function buildShellCmdForSpec({ shell_type, profile, cwd, claudeSessionId }) {
+  const proxyVars = {
+    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
+    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
+    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
+    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
+    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
+    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
+  };
+  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ');
+  const proxyPrefix = proxyExports ? `${proxyExports}; ` : '';
+
+  if (shell_type === 'bash') {
+    return buildInteractiveShellCmd(proxyPrefix);
+  }
+  // claude 分支 —— 有 session-id 优先 --resume，三级回退：
+  //   claude --resume <id> ||  claude --continue  ||  claude
+  // 任一成功都进到对话；全失败 exec zsh -i 兜底（避免空窗口）
+  const base = '--dangerously-skip-permissions';
+  const primary = claudeSessionId
+    ? `claude --resume ${claudeSessionId} ${base}`
+    : `claude ${base}`;
+  if (profile) {
+    const runScript = join(__dirname, 'nexus-run-claude.sh');
+    // 把 claudeSessionId 作为第 3 个参数传给脚本；脚本内判空走 --resume 或默认启动
+    const resumeArg = claudeSessionId ? `'${claudeSessionId}'` : `''`;
+    return `${proxyPrefix}bash '${runScript}' ${profile} '${cwd}' ${resumeArg} || echo; echo '[Nexus] claude 退出或启动失败，fallback 到 ${INTERACTIVE_SHELL}'; ${INTERACTIVE_SHELL_CMD}`;
+  }
+  return `${proxyPrefix}${primary} || ${claudeSessionId ? 'claude --continue ' + base + ' || ' : ''}claude ${base} || echo; echo '[Nexus] claude 启动失败，回退到 ${INTERACTIVE_SHELL}'; ${INTERACTIVE_SHELL_CMD}`;
+}
+
+// 启动恢复：对 snapshot 里 tmux 中不存在的 session 按 spec 重建
+let lastRestoreSummary = { restored: [], skipped: [], failed: [], at: null };
+function restoreFromSnapshot() {
+  const snap = loadSnapshot();
+  const summary = { restored: [], skipped: [], failed: [], at: new Date().toISOString() };
+  let aliveSet;
+  try {
+    const alive = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
+      encoding: 'utf8', stdio: 'pipe'
+    }).trim().split('\n').filter(Boolean);
+    aliveSet = new Set(alive);
+  } catch { aliveSet = new Set(); }
+
+  for (const sess of snap.sessions) {
+    if (aliveSet.has(sess.name)) { summary.skipped.push(sess.name); continue; }
+    if (!existsSync(sess.cwd)) { summary.failed.push({ name: sess.name, reason: 'cwd missing' }); continue; }
+    const windows = (sess.windows || []).slice().sort((a, b) => a.index - b.index);
+    if (!windows.length) {
+      windows.push({ index: 0, name: sess.name.split('-').pop() || 'shell', cwd: sess.cwd, shell_type: sess.shell_type, profile: sess.profile });
+    }
+    try {
+      // 先创建 session（第一个 window）
+      const first = windows[0];
+      const firstCmd = buildShellCmdForSpec({ shell_type: first.shell_type, profile: first.profile, cwd: first.cwd, claudeSessionId: first.claudeSessionId });
+      execFileSync('tmux', [
+        'new-session', '-d',
+        '-s', sess.name,
+        '-n', first.name || 'shell',
+        '-c', first.cwd,
+        '-e', `NEXUS_CWD=${sess.cwd}`,
+        firstCmd,
+      ], { stdio: 'pipe' });
+      // 再添加剩余 windows
+      for (let i = 1; i < windows.length; i++) {
+        const w = windows[i];
+        const cmd = buildShellCmdForSpec({ shell_type: w.shell_type, profile: w.profile, cwd: w.cwd, claudeSessionId: w.claudeSessionId });
+        try {
+          execFileSync('tmux', [
+            'new-window',
+            '-t', sess.name,
+            '-c', w.cwd,
+            '-n', w.name || 'shell',
+            cmd,
+          ], { stdio: 'pipe' });
+        } catch (e) {
+          summary.failed.push({ name: `${sess.name}:${w.index}`, reason: e.message });
+        }
+      }
+      summary.restored.push(sess.name);
+    } catch (e) {
+      summary.failed.push({ name: sess.name, reason: e.message });
+    }
+  }
+  lastRestoreSummary = summary;
+  if (summary.restored.length || summary.failed.length) {
+    console.log(`[Snapshot] restored=${summary.restored.length} skipped=${summary.skipped.length} failed=${summary.failed.length}`);
+  }
+}
+
 // PTY 多实例管理（F-11/F-18：每个 session:window 独立 PTY）
 const ptyMap = new Map(); // "session:windowIndex" -> { pty, clients: Set<ws>, lastOutput, lastActivity }
 
@@ -1956,4 +2350,13 @@ server.listen(Number(PORT), '0.0.0.0', () => {
     execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n "${defaultWindowName}" -c "${WORKSPACE_ROOT}" "${INTERACTIVE_SHELL}"`);
     console.log(`tmux session '${TMUX_SESSION}' ready`);
   } catch (e) { console.warn('tmux session init failed:', e.message); }
+
+  // Snapshot 恢复：对 snapshot 里 tmux 中不存在的 project/channel 按 spec 重建
+  // 对电脑重启、tmux kill-server 等场景自动恢复
+  try { restoreFromSnapshot() } catch (e) { console.warn('[Snapshot] restore failed:', e.message) }
+
+  // 定期 reconcile：同步 claude session-id，剔除已删除 window；不改变 session 骨架
+  setInterval(() => {
+    try { reconcileSnapshot() } catch (e) { console.warn('[Snapshot] reconcile failed:', e.message) }
+  }, 60 * 1000)
 });
