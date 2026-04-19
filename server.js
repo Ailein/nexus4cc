@@ -888,23 +888,151 @@ app.get('/api/sessions/:id/output', authMiddleware, (req, res) => {
 });
 
 // GET /api/sessions/:id/scrollback — fetch tmux scrollback history (works in alternate screen too)
+// Query: lines (per-page, default 3000, max 10000), offset (skip most-recent N lines, default 0)
+// offset=0 返回末尾 lines 行；offset=N 返回倒数 N+1..N+lines 行，配合前端分页加载
 app.get('/api/sessions/:id/scrollback', authMiddleware, (req, res) => {
   const windowIndex = parseInt(req.params.id, 10)
   const session = req.query.session || TMUX_SESSION
   const lines = Math.min(parseInt(req.query.lines || '3000', 10), 10000)
+  const offset = Math.max(parseInt(req.query.offset || '0', 10), 0)
   const target = `${session}:${windowIndex}`
 
-  // Get pane height first, then capture content and dedup ghost frames
+  // tmux capture-pane 的 -S/-E 接受负数（从底往上数，-1 是最后一行）
+  // offset=0 → -S -lines              (末尾 lines 行)
+  // offset>0 → -S -(offset+lines) -E -(offset+1)  (倒数 offset+1..offset+lines)
+  const startArg = `-${offset + lines}`
+  const endArgs = offset > 0 ? ['-E', `-${offset + 1}`] : []
+
   exec(`tmux display -p -t ${target} '#{pane_height}' 2>/dev/null`, (err, phOut) => {
     const paneHeight = parseInt(phOut?.trim(), 10) || 50
-    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+    const captureCmd = `tmux capture-pane -e -p -S ${startArg} ${endArgs.join(' ')} -t ${target} 2>/dev/null`
+    exec(captureCmd, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
       if (err) return res.status(500).json({ error: err.message })
       const rawLines = stdout.split('\n').map(l => l.trimEnd())
-      const content = dedupScrollback(rawLines, paneHeight).join('\n')
-      res.json({ content })
+      // 去掉末尾可能因 tmux 输出残留的空行（capture-pane 每次都追加一个 \n）
+      while (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop()
+      const content = dedupScrollback(rawLines, paneHeight).map(trimGhostResidue).join('\n')
+      // hasMore 判断：若本次拿到的原始行数 < 请求的 lines，说明 tmux buffer 已到顶
+      const hasMore = rawLines.length >= lines
+      res.json({ content, offset, lines, hasMore })
     })
   })
 })
+
+// GET /api/sessions/:id/history — 读取该 tmux window 对应的 claude 会话 jsonl，
+// 返回结构化消息数组（聊天视图）。流程：
+//   1) tmux display -p 拿 pane_current_path → cwd
+//   2) inferClaudeSessionId(cwd) 找最新 jsonl
+//   3) parseClaudeSessionJsonl 抽 user/assistant 消息
+// 若 window 无 cwd 或无 jsonl，返回 kind='none'，前端 fallback 到 terminal mode。
+app.get('/api/sessions/:id/history', authMiddleware, (req, res) => {
+  const windowIndex = parseInt(req.params.id, 10)
+  const session = req.query.session || TMUX_SESSION
+  const target = `${session}:${windowIndex}`
+
+  exec(`tmux display-message -t ${target} -p '#{pane_current_path}' 2>/dev/null`, (err, stdout) => {
+    const cwd = (stdout || '').trim()
+    if (!cwd) return res.json({ kind: 'none', reason: 'no cwd' })
+
+    const sessionId = inferClaudeSessionId(cwd)
+    if (!sessionId) return res.json({ kind: 'none', reason: 'no session jsonl', cwd })
+
+    const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+    const jsonlPath = join(process.env.HOME || '', '.claude', 'projects', encoded, `${sessionId}.jsonl`)
+    if (!existsSync(jsonlPath)) return res.json({ kind: 'none', reason: 'jsonl missing', cwd, sessionId })
+
+    // 附带返回 shell_type（来自 snapshot），前端用它决定默认 mode
+    let shellType = null
+    try {
+      const snap = loadSnapshot()
+      const sess = snap.sessions.find(s => s.name === session)
+      const win = sess?.windows?.find(w => Number(w.index) === windowIndex)
+      shellType = win?.shell_type || null
+    } catch { /* ignore */ }
+
+    try {
+      const messages = parseClaudeSessionJsonl(jsonlPath)
+      res.json({ kind: 'claude', sessionId, cwd, shellType, messages })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+})
+
+// 解析 claude session jsonl，只保留 user / assistant 消息，抽成 { role, ts, items[] }。
+// items 支持: text / thinking / tool_use / tool_result / image。
+// 大字段（text/thinking/tool_result）超过 truncateLen 时截断并打 truncated 标记供前端提示。
+function parseClaudeSessionJsonl(jsonlPath, { truncateLen = 4000 } = {}) {
+  const messages = []
+  const raw = readFileSync(jsonlPath, 'utf8')
+  const fileLines = raw.split('\n')
+
+  const truncate = (text) => {
+    if (typeof text !== 'string') return { text: '', truncated: false, totalLen: 0 }
+    if (text.length <= truncateLen) return { text, truncated: false, totalLen: text.length }
+    return { text: text.slice(0, truncateLen), truncated: true, totalLen: text.length }
+  }
+
+  for (const line of fileLines) {
+    if (!line) continue
+    let d
+    try { d = JSON.parse(line) } catch { continue }
+    const type = d?.type
+    if (type !== 'user' && type !== 'assistant') continue
+    if (d.isSidechain) continue
+
+    const ts = d.timestamp || null
+    const role = type
+    const items = []
+    const msg = d.message || {}
+    const rawContent = msg.content
+
+    if (typeof rawContent === 'string') {
+      if (rawContent) items.push({ kind: 'text', ...truncate(rawContent) })
+    } else if (Array.isArray(rawContent)) {
+      for (const c of rawContent) {
+        const ct = c?.type
+        if (ct === 'text') {
+          if (c.text) items.push({ kind: 'text', ...truncate(c.text) })
+        } else if (ct === 'thinking') {
+          if (c.thinking) items.push({ kind: 'thinking', ...truncate(c.thinking) })
+        } else if (ct === 'tool_use') {
+          items.push({
+            kind: 'tool_use',
+            name: c.name || '(unknown)',
+            id: c.id || '',
+            input: c.input ?? null,
+          })
+        } else if (ct === 'tool_result') {
+          let text = ''
+          const rc = c.content
+          if (typeof rc === 'string') text = rc
+          else if (Array.isArray(rc)) {
+            text = rc.map(x => {
+              if (typeof x === 'string') return x
+              if (x?.type === 'text') return x.text || ''
+              if (x?.type === 'image') return '[图片]'
+              return ''
+            }).join('\n')
+          }
+          items.push({
+            kind: 'tool_result',
+            toolUseId: c.tool_use_id || '',
+            isError: !!c.is_error,
+            ...truncate(text),
+          })
+        } else if (ct === 'image') {
+          items.push({ kind: 'image' })
+        }
+        // 其他类型（视频、文档等）忽略
+      }
+    }
+
+    if (items.length === 0) continue
+    messages.push({ role, ts, items })
+  }
+  return messages
+}
 
 // Remove "ghost frame" duplicates from scrollback caused by full-screen app re-renders.
 // Ghost frames are paneHeight-sized blocks pushed into scrollback when a full-screen app
@@ -962,6 +1090,43 @@ function dedupScrollback(lines, paneHeight) {
   }
 
   return lines.filter((_, idx) => keep[idx])
+}
+
+// 裁掉每行尾部的"鬼影残留"——TUI 重绘时未发 ESC[K 导致 tmux cell 里残留的旧字符。
+// 触发条件：行末有 ≥4 段 (单非空白字符 + 1-3 空白) 重复模式（典型如 "f  c  r 8 t 3 )"）。
+// 主体内容长度需 ≥10，避免误伤短行；保留前置 ANSI 颜色码并补一个 reset。
+function trimGhostResidue(line) {
+  const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
+  const stripped = line.replace(ANSI_RE, '').replace(/\s+$/, '')
+  if (stripped.length < 20) return line
+
+  // lookbehind 强制鬼影段前必须是空格或行首，避免吃掉合法内容的尾字符
+  const m = /(?<=\s|^)(?:\S\s{1,3}){4,}\S?\s*$/.exec(stripped)
+  if (!m) return line
+  if (m.index < 10) return line
+
+  // 把鬼影前的尾随空白一并剥掉
+  let trimEnd = m.index
+  while (trimEnd > 0 && /\s/.test(stripped[trimEnd - 1])) trimEnd--
+  if (trimEnd === 0) return line  // 整行都是鬼影模式，保守不裁
+
+  // 走原始 line（含 ANSI），保留 ANSI + 可见字符直到 trimEnd
+  let keep = ''
+  let strippedPos = 0
+  let i = 0
+  while (i < line.length && strippedPos < trimEnd) {
+    ANSI_RE.lastIndex = i
+    const am = ANSI_RE.exec(line)
+    if (am && am.index === i) {
+      keep += am[0]
+      i += am[0].length
+    } else {
+      keep += line[i]
+      strippedPos++
+      i++
+    }
+  }
+  return keep + '\x1b[0m'
 }
 
 // GET /api/config — 服务端配置信息（供前端初始化用）
@@ -2200,6 +2365,12 @@ function ensureWindowPty(session, windowIndex) {
   const actualKey = ptyKey(safeSession, targetWindow);
   if (ptyMap.has(actualKey)) return { key: actualKey, entry: ptyMap.get(actualKey) }; // reuse if fallback exists
 
+  // 给老 window 补 history-limit（全局 set-option 只对启动 nexus 之后新建的 window 生效，
+  // 预先存在的 window 仍是 tmux 默认 2000。对每个被 attach 的 pane 显式设一次）
+  try {
+    execFileSync('tmux', ['set-option', '-p', '-t', `${safeSession}:${targetWindow}`, 'history-limit', '50000'], { stdio: 'pipe' });
+  } catch { /* 老版 tmux 可能不支持 -p，忽略 */ }
+
   let ptyProc;
   try {
     ptyProc = pty.spawn('tmux', ['attach-session', '-t', `${safeSession}:${targetWindow}`], {
@@ -2213,17 +2384,22 @@ function ensureWindowPty(session, windowIndex) {
     return { key: actualKey, entry: { pty: null, clients: new Set(), clientSizes: new Map(), lastOutput: '', lastActivity: Date.now() } };
   }
 
-  const entry = { pty: ptyProc, clients: new Set(), clientSizes: new Map(), lastOutput: '', lastActivity: Date.now() };
+  const entry = { pty: ptyProc, clients: new Set(), clientSizes: new Map(), lastSnapshot: '', lastActivity: Date.now() };
   ptyMap.set(actualKey, entry);
 
+  // 只转发 PTY 里的 control 码（DEC mode、OSC、应用键盘模式）——这些 xterm.js 需要才能正确处理 mouse/alt-screen/title 等。
+  // 不转发 cell 写入（文本/cursor 定位/SGR/erase），全部交由 snapshot 用 canonical state 推送，避免 diff 鬼影。
   ptyProc.onData((data) => {
     const ent = ptyMap.get(actualKey);
     if (!ent) return;
-    ent.lastOutput = (ent.lastOutput + data).slice(-10000);
     ent.lastActivity = Date.now();
-    for (const ws of ent.clients) {
-      if (ws.readyState === 1) ws.send(data);
+    const control = extractControlSequences(data);
+    if (control) {
+      for (const ws of ent.clients) {
+        if (ws.readyState === 1) ws.send(control);
+      }
     }
+    scheduleSnapshot(ent, actualKey);
   });
 
   ptyProc.onExit(({ exitCode }) => {
@@ -2239,6 +2415,88 @@ function ensureWindowPty(session, windowIndex) {
   });
 
   return { key: actualKey, entry };
+}
+
+// 从 PTY 字节流里挑出 xterm.js 必须感知的 control 码：DEC private mode (h/l)、OSC、ESC=/ESC>。
+// 跳过 cell 写入（文本/CSI 光标定位/SGR/erase）——那些用 snapshot 覆盖。
+function extractControlSequences(s) {
+  if (!s || s.indexOf('\x1b') < 0) return ''
+  const out = []
+  let i = 0
+  while (i < s.length) {
+    if (s.charCodeAt(i) !== 0x1b) { i++; continue }
+    const next = s.charCodeAt(i + 1)
+    if (Number.isNaN(next)) break
+    if (next === 0x5b) { // CSI: ESC [
+      let j = i + 2
+      let priv = 0
+      const pc = s.charCodeAt(j)
+      if (pc === 0x3f || pc === 0x3e || pc === 0x3c || pc === 0x21) { priv = pc; j++ }
+      while (j < s.length) { const c = s.charCodeAt(j); if ((c >= 0x30 && c <= 0x39) || c === 0x3b) j++; else break }
+      while (j < s.length) { const c = s.charCodeAt(j); if (c >= 0x20 && c <= 0x2f) j++; else break }
+      if (j >= s.length) { i++; continue }
+      const final = s.charCodeAt(j)
+      // 只保留 DEC private h/l（mode set/reset），其它 CSI（光标/SGR/erase）丢弃
+      if (priv === 0x3f && (final === 0x68 || final === 0x6c)) {
+        out.push(s.slice(i, j + 1))
+      }
+      i = j + 1
+    } else if (next === 0x5d) { // OSC: ESC ]
+      let j = i + 2
+      while (j < s.length) {
+        const c = s.charCodeAt(j)
+        if (c === 0x07) { j++; break }
+        if (c === 0x1b && s.charCodeAt(j + 1) === 0x5c) { j += 2; break }
+        j++
+      }
+      out.push(s.slice(i, j))
+      i = j
+    } else if (next === 0x3d || next === 0x3e) { // ESC = (DECKPAM) / ESC > (DECKPNM)
+      out.push(s.slice(i, i + 2))
+      i += 2
+    } else {
+      i++
+    }
+  }
+  return out.join('')
+}
+
+// 抓 tmux pane 当前 state（cell 内容 + cursor 位置）拼成完整 frame 推给 ws，覆盖 diff 转发可能留下的鬼影。
+function snapshotAndSend(ent, key, done) {
+  const cursorP = new Promise((r) => {
+    exec(`tmux display-message -p -t '${key}' '#{cursor_x},#{cursor_y}' 2>/dev/null`, (e, o) => r(e ? null : (o || '').trim()))
+  })
+  const captureP = new Promise((r) => {
+    exec(`tmux capture-pane -e -p -t '${key}' 2>/dev/null`, { maxBuffer: 1024 * 1024 }, (e, o) => r(e ? null : o))
+  })
+  Promise.all([cursorP, captureP]).then(([cursor, content]) => {
+    if (content) {
+      const lines = content.replace(/\n+$/, '').split('\n')
+      const [cx, cy] = (cursor || '0,0').split(',').map(n => parseInt(n, 10) || 0)
+      const frame = '\x1b[0m\x1b[H'
+                  + lines.map(l => l + '\x1b[K').join('\r\n')
+                  + `\x1b[${cy + 1};${cx + 1}H`
+      ent.lastSnapshot = frame
+      for (const ws of ent.clients) {
+        if (ws.readyState === 1) ws.send(frame)
+      }
+    }
+    if (done) done()
+  })
+}
+
+// 「连续触发 + coalesce」：每次 PTY 输出都想 snap。前一个 snap 还在 exec 时就排一次 pending，
+// 完成后立刻起下一个；不引入人为 throttle 等待，把鬼影窗口压缩到 capture-pane exec 本身（~10-30ms）。
+function scheduleSnapshot(ent, key) {
+  if (ent._snapInFlight) { ent._snapPending = true; return }
+  ent._snapInFlight = true
+  snapshotAndSend(ent, key, () => {
+    ent._snapInFlight = false
+    if (ent._snapPending) {
+      ent._snapPending = false
+      scheduleSnapshot(ent, key)
+    }
+  })
 }
 
 // WebSocket 服务 — 支持 /ws?token=xxx&window=<index>
@@ -2263,10 +2521,9 @@ wss.on('connection', (ws, req) => {
   entry.clients.add(ws);
   console.log(`Client connected to ${key} (clients: ${entry.clients.size})`);
 
-  // Send recent output so the screen isn't blank while waiting for the first repaint.
-  if (entry.lastOutput) {
-    ws.send(entry.lastOutput.slice(-2000));
-  }
+  // 立刻发上一次的快照（如果有），避免空白屏；同时立即触发新一次 snapshot 拿最新 state
+  if (entry.lastSnapshot) ws.send(entry.lastSnapshot);
+  scheduleSnapshot(entry, key);
 
   ws.on('message', (msg) => {
     const ent = ptyMap.get(key);
@@ -2280,15 +2537,12 @@ wss.on('connection', (ws, req) => {
         const newCols = Number(data.cols);
         const newRows = Number(data.rows);
         ent.clientSizes.set(ws, { cols: newCols, rows: newRows });
-        // 直接使用当前客户端的尺寸，而不是所有客户端的最小值
-        // 避免多个客户端/窗口切换时的尺寸混乱
         ent.pty.resize(Math.max(newCols, 10), Math.max(newRows, 5));
       }
     } catch { /* not JSON — fall through to pty.write */ }
-    // Write for all non-resize messages. Previously only the catch branch wrote,
-    // which silently dropped single-digit strings ('1'..'9','0') since
-    // JSON.parse('1') succeeds without throwing.
     if (!isResize) ent.pty.write(str);
+    // resize 和用户输入都会触发 PTY 输出，而 onData 会自然触发 snapshot。
+    // 这里不再额外调度——避免重复请求。
   });
 
   ws.on('close', () => {
@@ -2348,7 +2602,9 @@ server.listen(Number(PORT), '0.0.0.0', () => {
   try {
     const defaultWindowName = WORKSPACE_ROOT.replace(/^\/+|\/+$/, '').split('/').pop() || '~'
     execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n "${defaultWindowName}" -c "${WORKSPACE_ROOT}" "${INTERACTIVE_SHELL}"`);
-    console.log(`tmux session '${TMUX_SESSION}' ready`);
+    // 提升 tmux server 全局 scrollback 上限（影响后续新建的 window；已存在的 buffer 不变）
+    execSync('tmux set-option -g history-limit 50000');
+    console.log(`tmux session '${TMUX_SESSION}' ready (history-limit=50000)`);
   } catch (e) { console.warn('tmux session init failed:', e.message); }
 
   // Snapshot 恢复：对 snapshot 里 tmux 中不存在的 project/channel 按 spec 重建
