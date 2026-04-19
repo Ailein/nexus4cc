@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#1a1a2e"/>
+  <g transform="translate(51.2 51.2) scale(2.133)">
+    <rect x="20" y="56" width="152" height="96" rx="8" fill="#0f172a" stroke="#3b82f6" stroke-width="3"/>
+    <circle cx="36" cy="72" r="5" fill="#ef4444"/>
+    <circle cx="56" cy="72" r="5" fill="#f59e0b"/>
+    <circle cx="76" cy="72" r="5" fill="#22c55e"/>
+    <text x="28" y="118" font-family="monospace" font-size="28" fill="#22c55e">N&gt;_</text>
+  </g>
+</svg>
