@@ -27,7 +27,18 @@ const ANSI256: string[] = (() => {
   return c
 })()
 
-function ansiToHtml(raw: string): string {
+function ansiToHtml(raw: string, theme?: ITheme): string {
+  // 用主题的 ANSI 0-15 颜色覆盖硬编码的 Tango 调色板，保证暗色主题下对比度
+  const palette: string[] = ANSI256.slice()
+  if (theme) {
+    const t = theme as Record<string, string | undefined>
+    const themeAnsi = [
+      t.black, t.red, t.green, t.yellow, t.blue, t.magenta, t.cyan, t.white,
+      t.brightBlack, t.brightRed, t.brightGreen, t.brightYellow,
+      t.brightBlue, t.brightMagenta, t.brightCyan, t.brightWhite,
+    ]
+    themeAnsi.forEach((c, i) => { if (c) palette[i] = c })
+  }
   const style = { fg: '', bg: '', bold: false, italic: false, dim: false }
   const out: string[] = []
   let buf = ''
@@ -40,7 +51,7 @@ function ansiToHtml(raw: string): string {
     if (style.bg) css.push(`background-color:${style.bg}`)
     if (style.bold) css.push('font-weight:700')
     if (style.italic) css.push('font-style:italic')
-    if (style.dim) css.push('opacity:0.6')
+    if (style.dim) css.push('opacity:0.75')
     out.push(css.length ? `<span style="${css.join(';')}">${esc}</span>` : esc)
     buf = ''
   }
@@ -56,15 +67,15 @@ function ansiToHtml(raw: string): string {
       else if (c === 3) style.italic = true
       else if (c === 22) { style.bold = false; style.dim = false }
       else if (c === 23) style.italic = false
-      else if (c >= 30 && c <= 37) style.fg = ANSI256[c - 30]
+      else if (c >= 30 && c <= 37) style.fg = palette[c - 30]
       else if (c === 39) style.fg = ''
-      else if (c >= 40 && c <= 47) style.bg = ANSI256[c - 40]
+      else if (c >= 40 && c <= 47) style.bg = palette[c - 40]
       else if (c === 49) style.bg = ''
-      else if (c >= 90 && c <= 97) style.fg = ANSI256[c - 90 + 8]
-      else if (c >= 100 && c <= 107) style.bg = ANSI256[c - 100 + 8]
-      else if (c === 38 && codes[j + 1] === 5 && j + 2 < codes.length) { style.fg = ANSI256[codes[j + 2]] ?? ''; j += 2 }
+      else if (c >= 90 && c <= 97) style.fg = palette[c - 90 + 8]
+      else if (c >= 100 && c <= 107) style.bg = palette[c - 100 + 8]
+      else if (c === 38 && codes[j + 1] === 5 && j + 2 < codes.length) { style.fg = palette[codes[j + 2]] ?? ''; j += 2 }
       else if (c === 38 && codes[j + 1] === 2 && j + 4 < codes.length) { style.fg = `rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`; j += 4 }
-      else if (c === 48 && codes[j + 1] === 5 && j + 2 < codes.length) { style.bg = ANSI256[codes[j + 2]] ?? ''; j += 2 }
+      else if (c === 48 && codes[j + 1] === 5 && j + 2 < codes.length) { style.bg = palette[codes[j + 2]] ?? ''; j += 2 }
       else if (c === 48 && codes[j + 1] === 2 && j + 4 < codes.length) { style.bg = `rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`; j += 4 }
       j++
     }
@@ -101,6 +112,9 @@ const NewWindowDialog = lazy(() => import('./NewWindowDialog'))
 const FilePanel = lazy(() => import('./FilePanel'))
 const WorkspaceBrowser = lazy(() => import('./WorkspaceBrowser'))
 const GeneralSettings = lazy(() => import('./GeneralSettings'))
+const ChatHistoryView = lazy(() => import('./ChatHistoryView'))
+
+type ScrollbackMode = 'chat' | 'terminal'
 
 interface TmuxWindow {
   index: number
@@ -170,7 +184,7 @@ const DARK_THEME: ITheme = {
   selectionBackground: '#3b82f660',
   selectionForeground: '#f1f5f9',
   black: '#1a1a2e',
-  brightBlack: '#4a5568',
+  brightBlack: '#64748b',
   red: '#fc8181',
   brightRed: '#feb2b2',
   green: '#68d391',
@@ -269,14 +283,22 @@ export default function Terminal({ token }: Props) {
   const [showWorkspace, setShowWorkspace] = useState(false)
   const [copySheetText, setCopySheetText] = useState<string | null>(null)
   const [showScrollback, setShowScrollback] = useState(false)
-  const [scrollbackContent, setScrollbackContent] = useState('')
+  const [scrollbackMode, setScrollbackMode] = useState<ScrollbackMode>('chat')
+  // 分页加载：chunks 按时间顺序存放（最早段在 index 0，最新段在末尾）
+  const [scrollbackChunks, setScrollbackChunks] = useState<string[]>([])
   const [scrollbackLoading, setScrollbackLoading] = useState(false)
+  const [scrollbackLoadingMore, setScrollbackLoadingMore] = useState(false)
+  const [scrollbackHasMore, setScrollbackHasMore] = useState(true)
+  const scrollbackOffsetRef = useRef(0)  // 已加载的最早段在 tmux buffer 中的起点（行数）
+  const scrollbackHasMoreRef = useRef(true)
+  const scrollbackLoadingMoreRef = useRef(false)
+  const SCROLLBACK_PAGE_SIZE = 3000
   const showScrollbackRef = useRef(false)
   const swipeUpAccumRef = useRef(0)
   const scrollbackOverlayRef = useRef<HTMLDivElement>(null)
   const triggerScrollbackRef = useRef<() => void>(() => {})
-  const scrollbackPrefetchRef = useRef<Promise<{ content: string }> | null>(null)
-  const scrollbackCacheRef = useRef<string | null>(null)
+  const scrollbackPrefetchRef = useRef<Promise<{ content: string; hasMore?: boolean; lines?: number }> | null>(null)
+  const scrollbackCacheRef = useRef<{ content: string; hasMore: boolean; lines: number } | null>(null)
   const pausePollingRef = useRef(false)
   const activeWindowIndexRef = useRef(0)
   const windowsInitializedRef = useRef(false)
@@ -1194,11 +1216,15 @@ export default function Terminal({ token }: Props) {
               // Pre-fetch while gesture is still building up
               const wi = activeWindowIndexRef.current
               const s = activeTmuxSessionRef.current
-              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${SCROLLBACK_PAGE_SIZE}`, {
                 headers: { Authorization: `Bearer ${token}` },
               }).then(r => r.ok ? r.json() : Promise.reject(r.status))
-                .then((data: { content: string }) => {
-                  scrollbackCacheRef.current = data.content.trimEnd()
+                .then((data: { content: string; hasMore?: boolean; lines?: number }) => {
+                  scrollbackCacheRef.current = {
+                    content: data.content.trimEnd(),
+                    hasMore: data.hasMore ?? false,
+                    lines: data.lines ?? SCROLLBACK_PAGE_SIZE,
+                  }
                   scrollbackPrefetchRef.current = null
                   return data
                 })
@@ -1692,28 +1718,103 @@ export default function Terminal({ token }: Props) {
   function closeScrollback() {
     showScrollbackRef.current = false
     setShowScrollback(false)
-    setScrollbackContent('')
+    setScrollbackMode('chat')
+    setScrollbackChunks([])
+    scrollbackOffsetRef.current = 0
+    scrollbackHasMoreRef.current = true
+    setScrollbackHasMore(true)
+    scrollbackLoadingMoreRef.current = false
+    setScrollbackLoadingMore(false)
     scrollbackCacheRef.current = null
     scrollbackPrefetchRef.current = null
   }
 
+  function resetTerminalScrollbackState() {
+    setScrollbackChunks([])
+    scrollbackOffsetRef.current = 0
+    scrollbackHasMoreRef.current = true
+    setScrollbackHasMore(true)
+    scrollbackLoadingMoreRef.current = false
+    setScrollbackLoadingMore(false)
+  }
+
+  // 稳定 callback 引用，否则每次父 render 传新函数会触发子 effect 重新 fetch
+  const handleChatNoHistory = useCallback(() => setScrollbackMode('terminal'), [])
+
+  async function loadMoreScrollback() {
+    if (scrollbackLoadingMoreRef.current) return
+    if (!scrollbackHasMoreRef.current) return
+    scrollbackLoadingMoreRef.current = true
+    setScrollbackLoadingMore(true)
+
+    const overlay = scrollbackOverlayRef.current
+    const prevScrollHeight = overlay?.scrollHeight ?? 0
+    const prevScrollTop = overlay?.scrollTop ?? 0
+    const wi = activeWindowIndexRef.current
+    const s = activeTmuxSessionRef.current
+    const offset = scrollbackOffsetRef.current
+
+    try {
+      const r = await fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${SCROLLBACK_PAGE_SIZE}&offset=${offset}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data: { content: string; hasMore?: boolean; lines?: number } = await r.json()
+      const pageLines = data.lines ?? SCROLLBACK_PAGE_SIZE
+      scrollbackOffsetRef.current = offset + pageLines
+      scrollbackHasMoreRef.current = !!data.hasMore
+      setScrollbackHasMore(!!data.hasMore)
+      const chunk = (data.content ?? '').trimEnd()
+      if (chunk) {
+        setScrollbackChunks(prev => [chunk, ...prev])
+        // 保持 scroll 位置：新 chunk 在前面插入后，scrollTop 偏移到原有内容处
+        requestAnimationFrame(() => {
+          const el = scrollbackOverlayRef.current
+          if (!el) return
+          const delta = el.scrollHeight - prevScrollHeight
+          if (delta > 0) el.scrollTop = prevScrollTop + delta
+        })
+      }
+    } catch {
+      // 保持静默；hasMore 不变，允许用户再次触发
+    } finally {
+      scrollbackLoadingMoreRef.current = false
+      setScrollbackLoadingMore(false)
+    }
+  }
+
   function handleOverlayScroll(e: React.UIEvent<HTMLDivElement>) {
+    // 只在 terminal mode 下启用"滚到底部关闭"和"滚到顶部 load more"
+    if (scrollbackMode !== 'terminal') return
     const el = e.currentTarget
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30
     if (atBottom) {
       closeScrollback()
+      return
+    }
+    if (el.scrollTop < 200 && scrollbackHasMoreRef.current && !scrollbackLoadingMoreRef.current) {
+      loadMoreScrollback()
     }
   }
 
-  function fetchScrollback() {
-    if (showScrollbackRef.current) return // already showing
+  function openScrollback() {
+    if (showScrollbackRef.current) return
     showScrollbackRef.current = true
     swipeUpAccumRef.current = 0
     setShowScrollback(true)
+    setScrollbackMode('chat')  // 默认 chat；ChatHistoryView 报告 kind='none' 时自动切 terminal
+  }
+
+  function runTerminalFetch() {
+    resetTerminalScrollbackState()
 
     // Use pre-fetched cache if available (no loading flash)
     if (scrollbackCacheRef.current !== null) {
-      setScrollbackContent(scrollbackCacheRef.current)
+      const cache = scrollbackCacheRef.current
+      setScrollbackChunks([cache.content])
+      scrollbackOffsetRef.current = cache.lines
+      scrollbackHasMoreRef.current = cache.hasMore
+      setScrollbackHasMore(cache.hasMore)
       setScrollbackLoading(false)
       return
     }
@@ -1722,31 +1823,49 @@ export default function Terminal({ token }: Props) {
     const wi = activeWindowIndexRef.current
     const s = activeTmuxSessionRef.current
     const promise = scrollbackPrefetchRef.current ??
-      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${SCROLLBACK_PAGE_SIZE}`, {
         headers: { Authorization: `Bearer ${token}` },
       }).then(r => r.ok ? r.json() : Promise.reject(r.status))
 
     scrollbackPrefetchRef.current = null
     promise
-      .then(({ content }: { content: string }) => {
-        setScrollbackContent(content.trimEnd())
+      .then((data: { content: string; hasMore?: boolean; lines?: number }) => {
+        const content = (data.content ?? '').trimEnd()
+        const pageLines = data.lines ?? SCROLLBACK_PAGE_SIZE
+        setScrollbackChunks(content ? [content] : [])
+        scrollbackOffsetRef.current = pageLines
+        scrollbackHasMoreRef.current = !!data.hasMore
+        setScrollbackHasMore(!!data.hasMore)
         setScrollbackLoading(false)
       })
       .catch(() => {
-        setScrollbackContent('(加载失败)')
+        setScrollbackChunks(['(加载失败)'])
+        scrollbackHasMoreRef.current = false
+        setScrollbackHasMore(false)
         setScrollbackLoading(false)
       })
   }
 
+  // 进入 terminal mode 时首次加载
   useEffect(() => {
-    if (scrollbackContent && scrollbackOverlayRef.current) {
-      // 初始滚动到距离底部 50px，避免立即触发 atBottom 检测
+    if (!showScrollback) return
+    if (scrollbackMode !== 'terminal') return
+    if (scrollbackChunks.length > 0) return
+    if (scrollbackLoading) return
+    runTerminalFetch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showScrollback, scrollbackMode])
+
+  useEffect(() => {
+    // 首次渲染或 chunks 刚变成非空：滚动到距离底部 50px，避免立即触发 atBottom
+    // 仅在初次加载（offset == SCROLLBACK_PAGE_SIZE，即只有一段）时执行
+    if (scrollbackChunks.length === 1 && scrollbackOverlayRef.current) {
       const el = scrollbackOverlayRef.current
       el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 50)
     }
-  }, [scrollbackContent])
+  }, [scrollbackChunks.length])
 
-  triggerScrollbackRef.current = fetchScrollback
+  triggerScrollbackRef.current = openScrollback
 
   const toolbarProps = {
     token,
@@ -2322,12 +2441,36 @@ export default function Terminal({ token }: Props) {
         const termFontSize = termRef.current?.options.fontSize ?? 14
         const termFontFamily = termRef.current?.options.fontFamily ?? 'Menlo, Monaco, monospace'
         const termMuted = (termTheme as any).brightBlack ?? '#4a5568'
+        const isChatMode = scrollbackMode === 'chat'
+        const tabBase = 'px-2.5 py-1 text-xs rounded cursor-pointer border'
+        const activeTabStyle = { background: 'var(--nexus-accent)', color: '#fff', borderColor: 'var(--nexus-accent)' } as const
+        const inactiveTabStyle = { background: 'transparent', color: termMuted, borderColor: `${termMuted}66` } as const
         return (
-          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : toolbarHeightRef.current }}>
+          <div
+            className="fixed inset-0 z-[500] flex flex-col"
+            style={{
+              background: isChatMode ? 'var(--nexus-bg)' : termBg,
+              bottom: isWidePC ? 0 : toolbarHeightRef.current,
+            }}
+          >
             <GhostShield />
-            <div className="flex items-center justify-between px-3.5 py-2.5 border-b flex-shrink-0" style={{ borderColor: `${termMuted}44` }}>
-              <span className="font-semibold text-sm" style={{ color: termFg }}>历史记录</span>
-              <span className="text-xs flex-1 text-center" style={{ color: termMuted }}>滚到底部返回终端</span>
+            <div className="flex items-center gap-2 px-3.5 py-2.5 border-b flex-shrink-0" style={{ borderColor: `${termMuted}44` }}>
+              <span className="font-semibold text-sm whitespace-nowrap" style={{ color: isChatMode ? 'var(--nexus-text)' : termFg }}>历史记录</span>
+              <div className="flex items-center gap-1">
+                <button
+                  className={tabBase}
+                  style={isChatMode ? activeTabStyle : inactiveTabStyle}
+                  onClick={() => setScrollbackMode('chat')}
+                >对话</button>
+                <button
+                  className={tabBase}
+                  style={!isChatMode ? activeTabStyle : inactiveTabStyle}
+                  onClick={() => setScrollbackMode('terminal')}
+                >终端</button>
+              </div>
+              <span className="text-xs flex-1 text-center truncate" style={{ color: termMuted }}>
+                {isChatMode ? 'Claude 会话' : '滚到底部返回终端'}
+              </span>
               <button
                 className="bg-transparent border-none cursor-pointer p-1 flex items-center justify-center"
                 style={{ color: termMuted }}
@@ -2337,17 +2480,34 @@ export default function Terminal({ token }: Props) {
             <div
               ref={scrollbackOverlayRef}
               onScroll={handleOverlayScroll}
-              className="flex-1 overflow-y-auto py-2"
+              className="flex-1 overflow-y-auto"
               style={{ WebkitOverflowScrolling: 'touch' }}
             >
-              {scrollbackLoading ? (
+              {isChatMode ? (
+                <Suspense fallback={<div className="text-center py-8 text-nexus-text-2 text-sm">加载组件...</div>}>
+                  <ChatHistoryView
+                    token={token}
+                    tmuxSession={activeTmuxSession}
+                    windowIndex={activeWindowIndex}
+                    onNoHistory={handleChatNoHistory}
+                  />
+                </Suspense>
+              ) : scrollbackLoading ? (
                 <div className="text-center p-8" style={{ color: termMuted, fontFamily: termFontFamily, fontSize: termFontSize }}>加载中...</div>
               ) : (
-                <pre
-                  className="m-0 p-0 whitespace-pre-wrap break-all leading-tight"
-                  style={{ fontFamily: termFontFamily, fontSize: termFontSize, color: termFg }}
-                  dangerouslySetInnerHTML={{ __html: ansiToHtml(scrollbackContent) }}
-                />
+                <div className="py-2">
+                  {scrollbackLoadingMore && (
+                    <div className="text-center py-2" style={{ color: termMuted, fontFamily: termFontFamily, fontSize: termFontSize }}>加载更早的历史...</div>
+                  )}
+                  {!scrollbackHasMore && scrollbackChunks.length > 0 && (
+                    <div className="text-center py-2" style={{ color: termMuted, fontFamily: termFontFamily, fontSize: Math.max(termFontSize - 2, 10) }}>— 已到历史顶部 —</div>
+                  )}
+                  <pre
+                    className="m-0 p-0 whitespace-pre-wrap break-all leading-tight"
+                    style={{ fontFamily: termFontFamily, fontSize: termFontSize, color: termFg }}
+                    dangerouslySetInnerHTML={{ __html: ansiToHtml(scrollbackChunks.join('\n'), termTheme) }}
+                  />
+                </div>
               )}
             </div>
           </div>
