@@ -40,3 +40,6 @@ logs/
 .wb-*.mmd
 nexus-tech-report-wb.md
 .env.*-backup
+
+# Android App Links binding (per-deploy: domain + signing cert fingerprint)
+public/.well-known/
